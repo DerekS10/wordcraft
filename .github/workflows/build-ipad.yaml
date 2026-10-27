@@ -5,7 +5,6 @@ on:
   push:
     branches: [ "main" ]
     paths:
-      - 'ios-app/**'
       - '.github/workflows/build-ipad.yml'
 
 env:
@@ -26,7 +25,7 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - name: 3. Cachear compilación de Rust (Acelera futuros builds)
+      - name: 3. Cachear compilación de Rust
         uses: Swatinem/rust-cache@v2
 
       - name: 4. Instalar Trunk, wasm-bindgen y wasm-opt precompilados
@@ -41,30 +40,196 @@ jobs:
           trunk build --release --public-url "./" --dist "$GITHUB_WORKSPACE/ios-app/www"
           ls -la "$GITHUB_WORKSPACE/ios-app/www"
 
-      - name: 6. Generar Proyecto Xcode con XcodeGen
+      - name: 6. Generar archivos nativos de iPadOS y Proyecto Xcode
         run: |
+          mkdir -p "$GITHUB_WORKSPACE/ios-app/Sources"
+          cd "$GITHUB_WORKSPACE/ios-app"
+
+          cat << 'EOF' > project.yml
+          name: WordCraft
+          options:
+            bundleIdPrefix: com.wordcraft
+            deploymentTarget:
+              iOS: "16.0"
+          settings:
+            base:
+              PRODUCT_BUNDLE_IDENTIFIER: com.wordcraft.ipad
+              MARKETING_VERSION: "0.11.0"
+              CURRENT_PROJECT_VERSION: "1"
+              TARGETED_DEVICE_FAMILY: "1,2"
+              SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: YES
+              INFOPLIST_FILE: Info.plist
+          targets:
+            WordCraft:
+              type: application
+              platform: iOS
+              sources:
+                - path: Sources
+                - path: www
+                  type: folder
+                  buildPhase: resources
+          EOF
+
+          cat << 'EOF' > Info.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDevelopmentRegion</key>
+              <string>es</string>
+              <key>CFBundleDisplayName</key>
+              <string>WordCraft</string>
+              <key>CFBundleExecutable</key>
+              <string>$(EXECUTABLE_NAME)</string>
+              <key>CFBundleIdentifier</key>
+              <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+              <key>CFBundleInfoDictionaryVersion</key>
+              <string>6.0</string>
+              <key>CFBundleName</key>
+              <string>$(PRODUCT_BUNDLE_NAME)</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>$(MARKETING_VERSION)</string>
+              <key>CFBundleVersion</key>
+              <string>$(CURRENT_PROJECT_VERSION)</string>
+              <key>LSRequiresIPhoneOS</key>
+              <true/>
+              <key>UIApplicationSceneManifest</key>
+              <dict>
+                  <key>UIApplicationSupportsMultipleScenes</key>
+                  <true/>
+              </dict>
+              <key>UILaunchScreen</key>
+              <dict/>
+              <key>UIRequiresFullScreen</key>
+              <false/>
+              <key>UIStatusBarHidden</key>
+              <true/>
+              <key>UISupportedInterfaceOrientations~ipad</key>
+              <array>
+                  <string>UIInterfaceOrientationPortrait</string>
+                  <string>UIInterfaceOrientationPortraitUpsideDown</string>
+                  <string>UIInterfaceOrientationLandscapeLeft</string>
+                  <string>UIInterfaceOrientationLandscapeRight</string>
+              </array>
+              <key>LSSupportsOpeningDocumentsInPlace</key>
+              <true/>
+              <key>UIFileSharingEnabled</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+
+          cat << 'EOF' > Sources/WordCraftApp.swift
+          import SwiftUI
+          import WebKit
+
+          class LocalWasmSchemeHandler: NSObject, WKURLSchemeHandler {
+              func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
+                  guard let url = urlSchemeTask.request.url else { return }
+                  var path = url.path
+                  if path.isEmpty || path == "/" {
+                      path = "/index.html"
+                  }
+                  
+                  guard let wwwURL = Bundle.main.resourceURL?.appendingPathComponent("www") else {
+                      urlSchemeTask.didFailWithError(URLError(.fileDoesNotExist))
+                      return
+                  }
+                  
+                  let fileURL = wwwURL.appendingPathComponent(String(path.dropFirst()))
+                  guard let data = try? Data(contentsOf: fileURL) else {
+                      urlSchemeTask.didFailWithError(URLError(.fileDoesNotExist))
+                      return
+                  }
+                  
+                  let ext = fileURL.pathExtension.lowercased()
+                  let mimeType: String
+                  switch ext {
+                  case "html": mimeType = "text/html"
+                  case "js":   mimeType = "application/javascript"
+                  case "wasm": mimeType = "application/wasm"
+                  case "css":  mimeType = "text/css"
+                  case "svg":  mimeType = "image/svg+xml"
+                  case "png":  mimeType = "image/png"
+                  case "ttf", "otf": mimeType = "font/ttf"
+                  default:     mimeType = "application/octet-stream"
+                  }
+                  
+                  let response = HTTPURLResponse(
+                      url: url,
+                      statusCode: 200,
+                      httpVersion: "HTTP/1.1",
+                      headerFields: [
+                          "Content-Type": mimeType,
+                          "Access-Control-Allow-Origin": "*",
+                          "Cross-Origin-Opener-Policy": "same-origin",
+                          "Cross-Origin-Embedder-Policy": "require-corp"
+                      ]
+                  )!
+                  urlSchemeTask.didReceive(response)
+                  urlSchemeTask.didReceive(data)
+                  urlSchemeTask.didFinish()
+              }
+              
+              func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
+          }
+
+          struct WebViewContainer: UIViewRepresentable {
+              func makeUIView(context: Context) -> WKWebView {
+                  let config = WKWebViewConfiguration()
+                  config.setURLSchemeHandler(LocalWasmSchemeHandler(), forURLScheme: "wordcraft")
+                  config.preferences.javaScriptCanOpenWindowsAutomatically = true
+                  config.allowsInlineMediaPlayback = true
+                  
+                  let webView = WKWebView(frame: .zero, configuration: config)
+                  webView.scrollView.isScrollEnabled = false
+                  webView.scrollView.bounces = false
+                  webView.scrollView.contentInsetAdjustmentBehavior = .never
+                  
+                  if let url = URL(string: "wordcraft://app/index.html") {
+                      webView.load(URLRequest(url: url))
+                  }
+                  return webView
+              }
+              
+              func updateUIView(_ uiView: WKWebView, context: Context) {}
+          }
+
+          @main
+          struct WordCraftApp: App {
+              var body: some Scene {
+                  WindowGroup {
+                      WebViewContainer()
+                          .ignoresSafeArea(.all, edges: .all)
+                          .statusBar(hidden: true)
+                  }
+              }
+          }
+          EOF
+
           brew install xcodegen
-          cd ios-app
           xcodegen generate
 
       - name: 7. Compilar App de iPadOS (Sin Firma)
         run: |
-          cd ios-app
+          cd "$GITHUB_WORKSPACE/ios-app"
           xcodebuild build \
             -project WordCraft.xcodeproj \
             -scheme WordCraft \
             -configuration Release \
             -sdk iphoneos \
-            -derivedDataPath $RUNNER_TEMP/build \
+            -derivedDataPath "$RUNNER_TEMP/build" \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
 
       - name: 8. Empaquetar en archivo .IPA
         run: |
-          mkdir -p $RUNNER_TEMP/Payload
-          cp -R $RUNNER_TEMP/build/Build/Products/Release-iphoneos/WordCraft.app $RUNNER_TEMP/Payload/
-          cd $RUNNER_TEMP
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$RUNNER_TEMP/build/Build/Products/Release-iphoneos/WordCraft.app" "$RUNNER_TEMP/Payload/"
+          cd "$RUNNER_TEMP"
           zip -r WordCraft-iPadOS-Unsigned.ipa Payload
 
       - name: 9. Subir el archivo .IPA listo para descargar

@@ -1,0 +1,22 @@
+name: WordCraft
+options:
+  bundleIdPrefix: com.tudominio
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    PRODUCT_BUNDLE_IDENTIFIER: com.tudominio.wordcraft
+    MARKETING_VERSION: "0.5.0"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1,2" # 1 = iPhone, 2 = iPad (Soporte completo iPad Pro/Air/Mini)
+    SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: YES
+    INFOPLIST_FILE: Info.plist
+targets:
+  WordCraft:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: www
+        type: folder
+        buildPhase: resources

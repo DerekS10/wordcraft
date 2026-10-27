@@ -38,13 +38,221 @@ jobs:
           cd apps/wordcraft-web
           trunk build --release --public-url "./" --dist "$GITHUB_WORKSPACE/ios-app/www"
 
-      - name: 6. Generar archivos de iPadOS y Proyecto Xcode
+      - name: 6. Extraer Icono Original, Inyectar Puente iPadOS y Generar Proyecto Xcode
         run: |
           mkdir -p "$GITHUB_WORKSPACE/ios-app/Sources"
+          mkdir -p "$GITHUB_WORKSPACE/ios-app/Assets.xcassets/AppIcon.appiconset"
+          cd "$GITHUB_WORKSPACE"
+
+          # 1. Extraer o convertir el icono original del repositorio a 1024x1024 PNG
+          brew install librsvg imagemagick xcodegen
+          
+          python3 -c '
+          import os, glob, subprocess, shutil, json
+
+          icon_out = "ios-app/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
+          candidates_png = glob.glob("**/icon*.png", recursive=True) + glob.glob("**/logo*.png", recursive=True) + glob.glob("**/*wordcraft*.png", recursive=True)
+          candidates_svg = glob.glob("**/icon*.svg", recursive=True) + glob.glob("**/logo*.svg", recursive=True) + glob.glob("assets/**/*.svg", recursive=True) + glob.glob("packaging/**/*.svg", recursive=True)
+          candidates_icns = glob.glob("**/*.icns", recursive=True)
+
+          created = False
+          if candidates_icns:
+              subprocess.run(["sips", "-s", "format", "png", candidates_icns[0], "--out", icon_out], check=False)
+              if os.path.exists(icon_out):
+                  subprocess.run(["magick", icon_out, "-resize", "1024x1024!", "-background", "#1E56A0", "-alpha", "remove", "-alpha", "off", icon_out], check=False)
+                  created = True
+
+          if not created and candidates_png:
+              best_png = max(candidates_png, key=lambda p: os.path.getsize(p))
+              subprocess.run(["magick", best_png, "-resize", "1024x1024!", "-background", "#1E56A0", "-alpha", "remove", "-alpha", "off", icon_out], check=False)
+              created = os.path.exists(icon_out)
+
+          if not created and candidates_svg:
+              subprocess.run(["rsvg-convert", "-w", "1024", "-h", "1024", candidates_svg[0], "-o", icon_out], check=False)
+              if os.path.exists(icon_out):
+                  subprocess.run(["magick", icon_out, "-background", "#1E56A0", "-alpha", "remove", "-alpha", "off", icon_out], check=False)
+                  created = True
+
+          if not created:
+              # Fallback identico al diseno oficial de WordCraft (documento y pluma sobre mosaico azul)
+              svg_fallback = """<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+                <defs>
+                  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0%" stop-color="#2563EB"/>
+                    <stop offset="100%" stop-color="#1D4ED8"/>
+                  </linearGradient>
+                </defs>
+                <rect width="1024" height="1024" fill="url(#bg)"/>
+                <rect x="230" y="160" width="480" height="680" rx="40" fill="#FFFFFF"/>
+                <rect x="300" y="280" width="260" height="32" rx="16" fill="#2563EB"/>
+                <rect x="300" y="360" width="340" height="24" rx="12" fill="#93C5FD"/>
+                <rect x="300" y="420" width="340" height="24" rx="12" fill="#93C5FD"/>
+                <rect x="300" y="480" width="280" height="24" rx="12" fill="#93C5FD"/>
+                <rect x="300" y="540" width="320" height="24" rx="12" fill="#93C5FD"/>
+                <g transform="translate(620, 560) rotate(-35)">
+                  <rect x="-35" y="-180" width="70" height="280" rx="14" fill="#F59E0B" stroke="#1E293B" stroke-width="12"/>
+                  <polygon points="-35,100 35,100 0,185" fill="#FDE68A" stroke="#1E293B" stroke-width="12"/>
+                  <polygon points="-12,155 12,155 0,185" fill="#1E293B"/>
+                </g>
+              </svg>"""
+              with open("fallback.svg", "w") as f:
+                  f.write(svg_fallback)
+              subprocess.run(["rsvg-convert", "-w", "1024", "-h", "1024", "fallback.svg", "-o", icon_out], check=True)
+              subprocess.run(["magick", icon_out, "-alpha", "remove", "-alpha", "off", icon_out], check=True)
+
+          contents_json = {
+            "images": [
+              {
+                "filename": "icon-1024.png",
+                "idiom": "universal",
+                "platform": "ios",
+                "size": "1024x1024"
+              }
+            ],
+            "info": { "author": "xcode", "version": 1 }
+          }
+          with open("ios-app/Assets.xcassets/AppIcon.appiconset/Contents.json", "w") as f:
+              json.dump(contents_json, f, indent=2)
+          with open("ios-app/Assets.xcassets/Contents.json", "w") as f:
+              json.dump({"info": {"author": "xcode", "version": 1}}, f, indent=2)
+          '
+
+          # 2. Generar archivos del proyecto iOS con Servidor HTTP Local, Puente de Exportacion y Teclado iPadOS
           cd "$GITHUB_WORKSPACE/ios-app"
 
           python3 -c '
-          import pathlib
+          import pathlib, textwrap
+
+          # Inyectamos en index.html el puente para interceptar descargas Blob y gestionar foco de teclado en iPadOS
+          index_path = pathlib.Path("www/index.html")
+          if index_path.exists():
+              html = index_path.read_text(encoding="utf-8")
+              ipad_patch = """
+              <style>
+                html, body, canvas {
+                  touch-action: none !important;
+                  -webkit-user-select: none !important;
+                  user-select: none !important;
+                  overscroll-behavior: none !important;
+                }
+              </style>
+              <script>
+              (function() {
+                // 1. Interceptor de exportacion/descargas (.docx, .pdf, .odt, .md, etc.) hacia iPadOS
+                const blobMap = new Map();
+                const origCreateObjectURL = URL.createObjectURL;
+                URL.createObjectURL = function(obj) {
+                  const url = origCreateObjectURL.call(URL, obj);
+                  if (obj instanceof Blob) {
+                    blobMap.set(url, obj);
+                  }
+                  return url;
+                };
+
+                function exportBlobToiPad(blob, filename) {
+                  const reader = new FileReader();
+                  reader.onloadend = function() {
+                    const base64data = reader.result.split(",")[1];
+                    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.fileExport) {
+                      window.webkit.messageHandlers.fileExport.postMessage({
+                        filename: filename || "document.docx",
+                        base64: base64data,
+                        mimeType: blob.type || "application/octet-stream"
+                      });
+                    }
+                  };
+                  reader.readAsDataURL(blob);
+                }
+
+                const origClick = HTMLAnchorElement.prototype.click;
+                HTMLAnchorElement.prototype.click = function() {
+                  if (this.hasAttribute("download") || (this.href && this.href.startsWith("blob:"))) {
+                    const filename = this.getAttribute("download") || "documento.docx";
+                    const blob = blobMap.get(this.href);
+                    if (blob) {
+                      exportBlobToiPad(blob, filename);
+                      return;
+                    } else if (this.href.startsWith("blob:")) {
+                      fetch(this.href).then(r => r.blob()).then(b => exportBlobToiPad(b, filename));
+                      return;
+                    } else if (this.href.startsWith("data:")) {
+                      const base64data = this.href.split(",")[1];
+                      if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.fileExport) {
+                        window.webkit.messageHandlers.fileExport.postMessage({
+                          filename: filename,
+                          base64: base64data,
+                          mimeType: "application/octet-stream"
+                        });
+                      }
+                      return;
+                    }
+                  }
+                  return origClick.apply(this, arguments);
+                };
+
+                // Soporta tambien showSaveFilePicker si la app lo invoca
+                window.showSaveFilePicker = async function(options) {
+                  const suggestedName = (options && options.suggestedName) ? options.suggestedName : "documento.docx";
+                  let chunks = [];
+                  return {
+                    createWritable: async function() {
+                      return {
+                        write: async function(data) { chunks.push(data); },
+                        close: async function() {
+                          const blob = new Blob(chunks);
+                          exportBlobToiPad(blob, suggestedName);
+                        }
+                      };
+                    }
+                  };
+                };
+
+                // 2. Asegurar que el canvas reciba el foco para teclados fisicos y eventos de teclado desde Swift
+                window.addEventListener("DOMContentLoaded", () => {
+                  const obs = new MutationObserver(() => {
+                    const canvas = document.querySelector("canvas");
+                    if (canvas && !canvas.dataset.ipadReady) {
+                      canvas.dataset.ipadReady = "1";
+                      canvas.setAttribute("tabindex", "0");
+                      canvas.style.outline = "none";
+                      canvas.focus();
+                      canvas.addEventListener("pointerdown", () => {
+                        canvas.focus();
+                      });
+                    }
+                  });
+                  obs.observe(document.body, { childList: true, subtree: true });
+                });
+
+                // 3. Funcion global para que el teclado en pantalla de iPadOS inyecte texto y teclas especiales a egui/winit
+                window.__wordcraftSendText = function(text) {
+                  const target = document.querySelector("canvas") || document.activeElement || window;
+                  const inputEl = document.querySelector("input, textarea");
+                  if (inputEl && document.activeElement === inputEl) {
+                    document.execCommand("insertText", false, text);
+                  }
+                  for (const ch of text) {
+                    const keyOpts = { key: ch, code: "Key" + ch.toUpperCase(), bubbles: true, cancelable: true };
+                    target.dispatchEvent(new KeyboardEvent("keydown", keyOpts));
+                    target.dispatchEvent(new InputEvent("beforeinput", { data: ch, inputType: "insertText", bubbles: true, cancelable: true }));
+                    target.dispatchEvent(new InputEvent("input", { data: ch, inputType: "insertText", bubbles: true, cancelable: true }));
+                    target.dispatchEvent(new KeyboardEvent("keyup", keyOpts));
+                  }
+                };
+
+                window.__wordcraftSendSpecialKey = function(keyName, codeName, keyCodeNum) {
+                  const targets = [document.querySelector("canvas"), document.activeElement, document, window].filter(Boolean);
+                  const opts = { key: keyName, code: codeName, keyCode: keyCodeNum, which: keyCodeNum, bubbles: true, cancelable: true };
+                  if (targets[0]) {
+                    targets[0].dispatchEvent(new KeyboardEvent("keydown", opts));
+                    targets[0].dispatchEvent(new KeyboardEvent("keyup", opts));
+                  }
+                };
+              })();
+              </script>
+              """
+              html = html.replace("<head>", "<head>" + ipad_patch, 1)
+              index_path.write_text(html, encoding="utf-8")
 
           project_yml = """name: WordCraft
           options:
@@ -54,17 +262,19 @@ jobs:
           settings:
             base:
               PRODUCT_BUNDLE_IDENTIFIER: com.wordcraft.ipad
-              MARKETING_VERSION: "0.11.0"
-              CURRENT_PROJECT_VERSION: "1"
+              MARKETING_VERSION: "0.11.1"
+              CURRENT_PROJECT_VERSION: "2"
               TARGETED_DEVICE_FAMILY: "1,2"
               SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: YES
               INFOPLIST_FILE: Info.plist
+              ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
           targets:
             WordCraft:
               type: application
               platform: iOS
               sources:
                 - path: Sources
+                - path: Assets.xcassets
                 - path: www
                   type: folder
                   buildPhase: resources
@@ -94,6 +304,13 @@ jobs:
               <string>$(CURRENT_PROJECT_VERSION)</string>
               <key>LSRequiresIPhoneOS</key>
               <true/>
+              <key>NSAppTransportSecurity</key>
+              <dict>
+                  <key>NSAllowsArbitraryLoads</key>
+                  <true/>
+                  <key>NSAllowsLocalNetworking</key>
+                  <true/>
+              </dict>
               <key>UIApplicationSceneManifest</key>
               <dict>
                   <key>UIApplicationSupportsMultipleScenes</key>
@@ -122,91 +339,320 @@ jobs:
 
           swift_code = """import SwiftUI
           import WebKit
+          import Network
+          import UniformTypeIdentifiers
 
-          class LocalWasmSchemeHandler: NSObject, WKURLSchemeHandler {
-              func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
-                  guard let url = urlSchemeTask.request.url else { return }
-                  var path = url.path
-                  if path.isEmpty || path == "/" {
-                      path = "/index.html"
-                  }
-                  guard let wwwURL = Bundle.main.resourceURL?.appendingPathComponent("www") else {
-                      urlSchemeTask.didFailWithError(URLError(.fileDoesNotExist))
+          // 1. Micro-servidor HTTP en 127.0.0.1 para que WebKit habilite Secure Context (Teclado Fisico, Portapapeles, Descargas Blob y WebGPU/WebGL2)
+          class LocalWebServer {
+              static let shared = LocalWebServer()
+              private var listener: NWListener?
+              private(set) var port: UInt16 = 0
+              private let queue = DispatchQueue(label: "com.wordcraft.httpserver", attributes: .concurrent)
+
+              func start(completion: @escaping (UInt16) -> Void) {
+                  if port != 0 {
+                      completion(port)
                       return
                   }
-                  let fileURL = wwwURL.appendingPathComponent(String(path.dropFirst()))
-                  guard let data = try? Data(contentsOf: fileURL) else {
-                      urlSchemeTask.didFailWithError(URLError(.fileDoesNotExist))
-                      return
+                  do {
+                      let params = NWParameters.tcp
+                      params.allowLocalEndpointReuse = true
+                      let listener = try NWListener(using: params, on: .any)
+                      self.listener = listener
+
+                      listener.stateUpdateHandler = { [weak self] state in
+                          if case .ready = state, let assignedPort = listener.port?.rawValue {
+                              self?.port = assignedPort
+                              DispatchQueue.main.async {
+                                  completion(assignedPort)
+                              }
+                          }
+                      }
+
+                      listener.newConnectionHandler = { [weak self] connection in
+                          self?.handleConnection(connection)
+                      }
+
+                      listener.start(queue: queue)
+                  } catch {
+                      print("Error starting local server: \\(error)")
                   }
-                  let ext = fileURL.pathExtension.lowercased()
-                  let mimeType: String
-                  switch ext {
-                  case "html": mimeType = "text/html"
-                  case "js":   mimeType = "application/javascript"
-                  case "wasm": mimeType = "application/wasm"
-                  case "css":  mimeType = "text/css"
-                  case "svg":  mimeType = "image/svg+xml"
-                  case "png":  mimeType = "image/png"
-                  case "ttf", "otf": mimeType = "font/ttf"
-                  default:     mimeType = "application/octet-stream"
-                  }
-                  let response = HTTPURLResponse(
-                      url: url,
-                      statusCode: 200,
-                      httpVersion: "HTTP/1.1",
-                      headerFields: [
-                          "Content-Type": mimeType,
-                          "Access-Control-Allow-Origin": "*",
-                          "Cross-Origin-Opener-Policy": "same-origin",
-                          "Cross-Origin-Embedder-Policy": "require-corp"
-                      ]
-                  )!
-                  urlSchemeTask.didReceive(response)
-                  urlSchemeTask.didReceive(data)
-                  urlSchemeTask.didFinish()
               }
-              func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
+
+              private func handleConnection(_ connection: NWConnection) {
+                  connection.start(queue: queue)
+                  connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, _, error in
+                      guard let self = self, let data = data, error == nil,
+                            let request = String(data: data, encoding: .utf8) else {
+                          connection.cancel()
+                          return
+                      }
+                      let firstLine = request.components(separatedBy: "\\r\\n").first ?? ""
+                      let parts = firstLine.components(separatedBy: " ")
+                      var urlPath = parts.count > 1 ? parts[1] : "/"
+                      if let qIndex = urlPath.firstIndex(of: "?") {
+                          urlPath = String(urlPath[..<qIndex])
+                      }
+                      if urlPath == "/" || urlPath.isEmpty {
+                          urlPath = "/index.html"
+                      }
+                      urlPath = urlPath.removingPercentEncoding ?? urlPath
+
+                      guard let wwwURL = Bundle.main.resourceURL?.appendingPathComponent("www") else {
+                          connection.cancel()
+                          return
+                      }
+                      let relativePath = urlPath.hasPrefix("/") ? String(urlPath.dropFirst()) : urlPath
+                      let fileURL = wwwURL.appendingPathComponent(relativePath)
+
+                      if let fileData = try? Data(contentsOf: fileURL) {
+                          let mime = self.mimeType(for: fileURL.pathExtension.lowercased())
+                          let header = "HTTP/1.1 200 OK\\r\\nContent-Type: \\(mime)\\r\\nContent-Length: \\(fileData.count)\\r\\nAccess-Control-Allow-Origin: *\\r\\nCache-Control: no-cache\\r\\nConnection: close\\r\\n\\r\\n"
+                          var responseData = Data(header.utf8)
+                          responseData.append(fileData)
+                          connection.send(content: responseData, completion: .contentProcessed { _ in
+                              connection.cancel()
+                          })
+                      } else {
+                          let notFound = "HTTP/1.1 404 Not Found\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n"
+                          connection.send(content: Data(notFound.utf8), completion: .contentProcessed { _ in
+                              connection.cancel()
+                          })
+                      }
+                  }
+              }
+
+              private func mimeType(for ext: String) -> String {
+                  switch ext {
+                  case "html": return "text/html; charset=utf-8"
+                  case "js":   return "application/javascript; charset=utf-8"
+                  case "wasm": return "application/wasm"
+                  case "css":  return "text/css; charset=utf-8"
+                  case "svg":  return "image/svg+xml"
+                  case "png":  return "image/png"
+                  case "json": return "application/json"
+                  case "ttf", "otf": return "font/ttf"
+                  case "woff2": return "font/woff2"
+                  default:     return "application/octet-stream"
+                  }
+              }
+          }
+
+          // 2. Subclase de WKWebView que responde como First Responder y acepta tanto Teclado Fisico como Teclado en Pantalla
+          class FocusableWKWebView: WKWebView {
+              override var canBecomeFirstResponder: Bool { true }
+          }
+
+          // 3. Puente de Exportacion de Archivos (.docx, .pdf, etc.) y Descargas nativas de WKDownloadDelegate
+          class WebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKDownloadDelegate {
+              weak var webView: WKWebView?
+
+              func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+                  if message.name == "fileExport",
+                     let dict = message.body as? [String: Any],
+                     let filename = dict["filename"] as? String,
+                     let base64 = dict["base64"] as? String,
+                     let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters) {
+                      saveAndShareFile(data: data, filename: filename)
+                  }
+              }
+
+              private func saveAndShareFile(data: Data, filename: String) {
+                  let cleanName = filename.isEmpty ? "Documento.docx" : filename
+                  let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(cleanName)
+                  do {
+                      try data.write(to: tempURL, options: .atomic)
+                      DispatchQueue.main.async {
+                          self.presentShareSheet(for: tempURL)
+                      }
+                  } catch {
+                      print("Error guardando archivo exportado: \\(error)")
+                  }
+              }
+
+              private func presentShareSheet(for fileURL: URL) {
+                  guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                        let rootVC = scene.windows.first?.rootViewController else { return }
+                  var topVC = rootVC
+                  while let presented = topVC.presentedViewController {
+                      topVC = presented
+                  }
+                  let activityVC = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
+                  if let popover = activityVC.popoverPresentationController {
+                      popover.sourceView = topVC.view
+                      popover.sourceRect = CGRect(x: topVC.view.bounds.midX, y: topVC.view.bounds.midY, width: 1, height: 1)
+                      popover.permittedArrowDirections = []
+                  }
+                  topVC.present(activityVC, animated: true)
+              }
+
+              // Soporte adicional si WebKit dispara una descarga estandar
+              func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+                  download.delegate = self
+              }
+
+              func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+                  download.delegate = self
+              }
+
+              func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
+                  let dest = FileManager.default.temporaryDirectory.appendingPathComponent(suggestedFilename)
+                  try? FileManager.default.removeItem(at: dest)
+                  completionHandler(dest)
+              }
+
+              func downloadDidFinish(_ download: WKDownload) {
+                  // Presentado por el interceptor JS principal
+              }
           }
 
           struct WebViewContainer: UIViewRepresentable {
+              @Binding var webViewRef: WKWebView?
+
+              func makeCoordinator() -> WebCoordinator {
+                  WebCoordinator()
+              }
+
               func makeUIView(context: Context) -> WKWebView {
                   let config = WKWebViewConfiguration()
-                  config.setURLSchemeHandler(LocalWasmSchemeHandler(), forURLScheme: "wordcraft")
                   config.preferences.javaScriptCanOpenWindowsAutomatically = true
                   config.allowsInlineMediaPlayback = true
-                  let webView = WKWebView(frame: .zero, configuration: config)
+                  config.userContentController.add(context.coordinator, name: "fileExport")
+
+                  let webView = FocusableWKWebView(frame: .zero, configuration: config)
+                  webView.navigationDelegate = context.coordinator
+                  webView.uiDelegate = context.coordinator
                   webView.scrollView.isScrollEnabled = false
                   webView.scrollView.bounces = false
                   webView.scrollView.contentInsetAdjustmentBehavior = .never
-                  if let url = URL(string: "wordcraft://app/index.html") {
-                      webView.load(URLRequest(url: url))
+                  context.coordinator.webView = webView
+
+                  DispatchQueue.main.async {
+                      self.webViewRef = webView
+                  }
+
+                  LocalWebServer.shared.start { port in
+                      if let url = URL(string: "http://127.0.0.1:\\(port)/index.html") {
+                          webView.load(URLRequest(url: url))
+                      }
                   }
                   return webView
               }
+
               func updateUIView(_ uiView: WKWebView, context: Context) {}
+          }
+
+          // 4. Puente de Teclado en Pantalla para iPadOS (Permite escribir con el teclado tactil del iPad en el Canvas de egui)
+          struct OnScreenKeyboardBridge: UIViewRepresentable {
+              @Binding var isKeyboardVisible: Bool
+              var onTextTyped: (String) -> Void
+              var onSpecialKey: (String, String, Int) -> Void
+
+              class HiddenKeyInput: UITextField, UITextFieldDelegate {
+                  var onTextTyped: ((String) -> Void)?
+                  var onSpecialKey: ((String, String, Int) -> Void)?
+                  var onDismiss: (() -> Void)?
+
+                  override func deleteBackward() {
+                      onSpecialKey?("Backspace", "Backspace", 8)
+                  }
+
+                  func textField(_ textField: UITextField, shouldChangeCharactersIn range: NSRange, replacementString string: String) -> Bool {
+                      if string == "\\n" {
+                          onSpecialKey?("Enter", "Enter", 13)
+                          return false
+                      }
+                      if !string.isEmpty {
+                          onTextTyped?(string)
+                      }
+                      textField.text = " "
+                      return false
+                  }
+
+                  func textFieldDidEndEditing(_ textField: UITextField) {
+                      onDismiss?()
+                  }
+              }
+
+              func makeUIView(context: Context) -> HiddenKeyInput {
+                  let tf = HiddenKeyInput(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
+                  tf.text = " "
+                  tf.autocorrectionType = .no
+                  tf.autocapitalizationType = .sentences
+                  tf.spellCheckingType = .no
+                  tf.delegate = tf
+                  tf.onTextTyped = onTextTyped
+                  tf.onSpecialKey = onSpecialKey
+                  tf.onDismiss = {
+                      DispatchQueue.main.async {
+                          self.isKeyboardVisible = false
+                      }
+                  }
+                  return tf
+              }
+
+              func updateUIView(_ uiView: HiddenKeyInput, context: Context) {
+                  if isKeyboardVisible && !uiView.isFirstResponder {
+                      uiView.becomeFirstResponder()
+                  } else if !isKeyboardVisible && uiView.isFirstResponder {
+                      uiView.resignFirstResponder()
+                  }
+              }
           }
 
           @main
           struct WordCraftApp: App {
+              @State private var webViewRef: WKWebView?
+              @State private var isKeyboardVisible = false
+
               var body: some Scene {
                   WindowGroup {
-                      WebViewContainer()
-                          .ignoresSafeArea(.all, edges: .all)
-                          .statusBar(hidden: true)
+                      ZStack(alignment: .bottomTrailing) {
+                          WebViewContainer(webViewRef: $webViewRef)
+                              .ignoresSafeArea(.all, edges: .all)
+
+                          OnScreenKeyboardBridge(
+                              isKeyboardVisible: $isKeyboardVisible,
+                              onTextTyped: { text in
+                                  let escaped = text
+                                      .replacingOccurrences(of: "\\\\", with: "\\\\\\\\")
+                                      .replacingOccurrences(of: "\\"", with: "\\\\\\"")
+                                      .replacingOccurrences(of: "\\n", with: "\\\\n")
+                                  webViewRef?.evaluateJavaScript("window.__wordcraftSendText(\\"\\(escaped)\\");", completionHandler: nil)
+                              },
+                              onSpecialKey: { key, code, num in
+                                  webViewRef?.evaluateJavaScript("window.__wordcraftSendSpecialKey(\\"\\(key)\\", \\"\\(code)\\", \\(num));", completionHandler: nil)
+                              }
+                          )
+                          .frame(width: 1, height: 1)
+                          .opacity(0.01)
+
+                          // Boton flotante discreto para abrir/cerrar el teclado en pantalla del iPad cuando no uses teclado fisico
+                          Button(action: {
+                              isKeyboardVisible.toggle()
+                          }) {
+                              Image(systemName: isKeyboardVisible ? "keyboard.chevron.compact.down" : "keyboard")
+                                  .font(.system(size: 18, weight: .semibold))
+                                  .foregroundColor(.white)
+                                  .padding(12)
+                                  .background(Color.blue.opacity(0.85))
+                                  .clipShape(Circle())
+                                  .shadow(radius: 4)
+                          }
+                          .padding(.trailing, 20)
+                          .padding(.bottom, 24)
+                      }
+                      .statusBar(hidden: true)
                   }
               }
           }
           """
 
-          import textwrap
           pathlib.Path("project.yml").write_text(textwrap.dedent(project_yml).lstrip())
           pathlib.Path("Info.plist").write_text(textwrap.dedent(info_plist).lstrip())
           pathlib.Path("Sources/WordCraftApp.swift").write_text(textwrap.dedent(swift_code).lstrip())
           '
 
-          ls -la "$GITHUB_WORKSPACE/ios-app"
-          brew install xcodegen
           xcodegen generate --spec "$GITHUB_WORKSPACE/ios-app/project.yml"
 
       - name: 7. Compilar App de iPadOS (Sin Firma)

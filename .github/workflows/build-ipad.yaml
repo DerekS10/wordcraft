@@ -53,7 +53,6 @@ jobs:
           iconset_dir = "ios-app/Assets.xcassets/AppIcon.appiconset"
           master_png = os.path.join(iconset_dir, "master-1024.png")
 
-          # Buscamos primero en apps/wordcraft-web, assets, packaging o el SVG incrustado en README.md
           search_files = (
               glob.glob("apps/wordcraft-web/**/*icon*", recursive=True) +
               glob.glob("apps/wordcraft/**/*icon*", recursive=True) +
@@ -66,7 +65,6 @@ jobs:
           icns = [f for f in search_files if f.lower().endswith(".icns") and os.path.isfile(f)]
           icos = [f for f in search_files if f.lower().endswith(".ico") and os.path.isfile(f)]
 
-          print("Icon candidates found - ICNS:", icns, "SVG:", svgs, "PNG:", pngs, "ICO:", icos)
           created = False
 
           if icns:
@@ -86,7 +84,6 @@ jobs:
               subprocess.run(["magick", icos[0] + "[0]", "-resize", "1024x1024", master_png], check=False)
               created = os.path.exists(master_png)
 
-          # Si el icono esta inline como SVG dentro de README.md o index.html, lo extraemos
           if not created:
               for doc in ["README.md", "apps/wordcraft-web/index.html"]:
                   if os.path.exists(doc):
@@ -125,10 +122,8 @@ jobs:
                   f.write(svg_fallback)
               subprocess.run(["rsvg-convert", "-w", "1024", "-h", "1024", "fallback.svg", "-o", master_png], check=True)
 
-          # iOS exige que los iconos no tengan canal alfa transparente
           subprocess.run(["magick", master_png, "-background", "#1E40AF", "-alpha", "remove", "-alpha", "off", master_png], check=True)
 
-          # Generar todos los tamaños exactos de iPhone y iPad (incluyendo 152x152 y 167x167 de iPad Pro)
           specs = [
               ("icon-20@1x.png", 20, "20x20", "1x", "ipad"),
               ("icon-20@2x.png", 40, "20x20", "2x", "ipad"),
@@ -162,7 +157,7 @@ jobs:
               json.dump({"info": {"author": "xcode", "version": 1}}, f, indent=2)
           '
 
-          # 2. Inyectar el Puente Completo en index.html y crear el contenedor Swift con Apple Pencil Pro + AirPrint + Archivos Nativos
+          # 2. Inyectar el Puente Completo en index.html y crear el contenedor Swift corregido
           cd "$GITHUB_WORKSPACE/ios-app"
 
           python3 -c '
@@ -187,7 +182,6 @@ jobs:
                 const blobStore = new Map();
                 let lastCreatedBlob = null;
 
-                // 1. Interceptar el constructor de Blob y URL.createObjectURL para que NUNCA se pierda un archivo exportado/guardado en Rust
                 const OrigBlob = window.Blob;
                 window.Blob = function(parts, options) {
                   const b = new OrigBlob(parts, options);
@@ -208,7 +202,6 @@ jobs:
                   return url;
                 };
 
-                // Evitar que Rust borre el Blob antes de que Swift lo lea
                 URL.revokeObjectURL = function(url) {
                   setTimeout(() => {
                     blobStore.delete(url);
@@ -267,7 +260,6 @@ jobs:
                   return false;
                 }
 
-                // Capturar TODOS los metodos posibles que usa Rust/wasm-bindgen para disparar descargas
                 const origAnchorClick = HTMLAnchorElement.prototype.click;
                 HTMLAnchorElement.prototype.click = function() {
                   if (handleAnchorDownload(this)) return;
@@ -296,7 +288,6 @@ jobs:
                   }
                 }, true);
 
-                // Soporte para File System Access API (showSaveFilePicker)
                 window.showSaveFilePicker = async function(options) {
                   const suggestedName = (options && options.suggestedName) ? options.suggestedName : "Documento.docx";
                   let chunks = [];
@@ -317,7 +308,6 @@ jobs:
                   };
                 };
 
-                // 2. Interceptar window.print() para abrir AirPrint nativo de iPadOS
                 window.print = function() {
                   if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.nativeBridge) {
                     window.webkit.messageHandlers.nativeBridge.postMessage({
@@ -326,7 +316,6 @@ jobs:
                   }
                 };
 
-                // 3. Mantener el input nativo de egui/eframe siempre listo para teclado en pantalla y teclado fisico
                 function getEguiInput() {
                   return document.querySelector("input[type=text], textarea, input:not([type=file])");
                 }
@@ -345,7 +334,6 @@ jobs:
                   }
                 };
 
-                // Enviar atajos de teclado o comandos directos (para Apple Pencil Pro, Guardar, Imprimir, Deshacer, Formato)
                 window.__wordcraftSendShortcut = function(key, ctrlOrMeta, shiftKey) {
                   const targets = [getEguiInput(), getCanvas(), document.activeElement, document, window].filter(Boolean);
                   const code = key.length === 1 ? "Key" + key.toUpperCase() : key;
@@ -364,7 +352,6 @@ jobs:
                   }
                 };
 
-                // Enviar eventos de Mouse/Pointer precisos cuando el Apple Pencil hace Hover o arrastra como mouse
                 window.__wordcraftPencilMouse = function(phase, x, y) {
                   const canvas = getCanvas();
                   if (!canvas) return;
@@ -395,7 +382,6 @@ jobs:
                   }
                 };
 
-                // Inyectar texto garantizando compatibilidad con el input oculto de eframe 0.37
                 window.__wordcraftInsertText = function(text) {
                   const inp = getEguiInput();
                   const canvas = getCanvas() || document.body;
@@ -425,6 +411,7 @@ jobs:
               iOS: "16.0"
           settings:
             base:
+              SWIFT_VERSION: "5.0"
               PRODUCT_BUNDLE_IDENTIFIER: com.wordcraft.ipad
               MARKETING_VERSION: "0.11.2"
               CURRENT_PROJECT_VERSION: "3"
@@ -537,7 +524,7 @@ jobs:
           import UniformTypeIdentifiers
           import ObjectiveC.runtime
 
-          // 1. Permitir que WKWebView despliegue el teclado nativo de iPadOS programaticamente sin perder el foco del canvas de egui
+          // 1. Permitir que WKWebView despliegue el teclado nativo de iPadOS programaticamente
           extension WKWebView {
               static func enableProgrammaticKeyboardFocus() {
                   guard let wkContentViewClass = NSClassFromString("WKContentView") else { return }
@@ -643,141 +630,25 @@ jobs:
               }
           }
 
-          // 3. Coordinador Nativo: Guardar en Archivos (UIDocumentPicker), Compartir, AirPrint y Descargas
-          class NativeCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKDownloadDelegate, UIDocumentPickerDelegate {
-              weak var webView: WKWebView?
-              var pendingPrintAfterPDF = false
-
-              func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-                  guard message.name == "nativeBridge",
-                        let body = message.body as? [String: Any],
-                        let type = body["type"] as? String else { return }
-
-                  if type == "exportFile" {
-                      let filename = (body["filename"] as? String) ?? "Documento.docx"
-                      let base64 = (body["base64"] as? String) ?? ""
-                      if let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters) {
-                          handleExportedData(data: data, filename: filename)
-                      }
-                  } else if type == "printDocument" {
-                      printCurrentWebView()
-                  }
-              }
-
-              func handleExportedData(data: Data, filename: String) {
-                  let safeName = filename.isEmpty ? "Documento.docx" : filename
-                  let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(safeName)
-                  do {
-                      if FileManager.default.fileExists(atPath: tempURL.path) {
-                          try FileManager.default.removeItem(at: tempURL)
-                      }
-                      try data.write(to: tempURL, options: .atomic)
-
-                      // Tambien guardamos una copia automatica en la carpeta Documentos de la App (visible en la app Archivos -> En mi iPad -> WordCraft)
-                      if let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-                          let localCopy = docsDir.appendingPathComponent(safeName)
-                          try? FileManager.default.removeItem(at: localCopy)
-                          try? data.write(to: localCopy, options: .atomic)
-                      }
-
-                      DispatchQueue.main.async {
-                          if self.pendingPrintAfterPDF && safeName.lowercased().hasSuffix(".pdf") {
-                              self.pendingPrintAfterPDF = false
-                              self.printPDFData(data: data, jobName: safeName)
-                          } else {
-                              self.presentNativeSaveOptions(fileURL: tempURL)
-                          }
-                      }
-                  } catch {
-                      print("Error escribiendo archivo: \\(error)")
-                  }
-              }
-
-              func presentNativeSaveOptions(fileURL: URL) {
-                  guard let topVC = Self.topViewController() else { return }
-                  // Mostramos el selector nativo de Guardar en Archivos de iPadOS (permite elegir carpeta en iPad o iCloud Drive)
-                  let docPicker = UIDocumentPickerViewController(forExporting: [fileURL], asCopy: true)
-                  docPicker.delegate = self
-                  docPicker.modalPresentationStyle = .formSheet
-                  topVC.present(docPicker, animated: true)
-              }
-
-              func printPDFData(data: Data, jobName: String) {
-                  let printController = UIPrintInteractionController.shared
-                  let printInfo = UIPrintInfo(dictionary: nil)
-                  printInfo.outputType = .general
-                  printInfo.jobName = jobName
-                  printController.printInfo = printInfo
-                  printController.printingItem = data
-                  printController.present(animated: true, completionHandler: nil)
-              }
-
-              func printCurrentWebView() {
-                  guard let webView = webView else { return }
-                  let printController = UIPrintInteractionController.shared
-                  let printInfo = UIPrintInfo(dictionary: nil)
-                  printInfo.outputType = .general
-                  printInfo.jobName = "WordCraft Document"
-                  printController.printInfo = printInfo
-                  printController.printFormatter = webView.viewPrintFormatter()
-                  printController.present(animated: true, completionHandler: nil)
-              }
-
-              // Soporte para WKDownload nativo si WebKit captura un Blob directamente
-              func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
-                  download.delegate = self
-              }
-
-              func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
-                  download.delegate = self
-              }
-
-              private var lastDownloadURL: URL?
-              func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
-                  let dest = FileManager.default.temporaryDirectory.appendingPathComponent(suggestedFilename)
-                  try? FileManager.default.removeItem(at: dest)
-                  lastDownloadURL = dest
-                  completionHandler(dest)
-              }
-
-              func downloadDidFinish(_ download: WKDownload) {
-                  if let url = lastDownloadURL, let data = try? Data(contentsOf: url) {
-                      handleExportedData(data: data, filename: url.lastPathComponent)
-                  }
-              }
-
-              static func topViewController() -> UIViewController? {
-                  guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                        let rootVC = scene.windows.first?.rootViewController else { return nil }
-                  var top = rootVC
-                  while let presented = top.presentedViewController {
-                      top = presented
-                  }
-                  return top
-              }
-          }
-
-          // 4. Gestor de Apple Pencil (Hover como Puntero Mouse, Trazo como Mouse Drag, Doble Tap y Squeeze del Apple Pencil Pro)
-          class PencilInteractionManager: NSObject, UIPencilInteractionDelegate, UIGestureRecognizerDelegate {
+          // 3. Coordinador Unificado: Guardar en Archivos (UIDocumentPicker), AirPrint y Gestos de Apple Pencil Pro
+          class AppCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKDownloadDelegate, UIDocumentPickerDelegate, UIPencilInteractionDelegate, UIGestureRecognizerDelegate {
               weak var webView: WKWebView?
               var onHoverMove: ((CGPoint, Bool) -> Void)?
               var onPencilProSqueeze: ((CGPoint) -> Void)?
               var onPencilDoubleTap: (() -> Void)?
               var lastHoverPoint: CGPoint = CGPoint(x: 400, y: 300)
               var pencilActsAsMouse: Bool = true
+              private var lastDownloadURL: URL?
 
-              func attach(to view: UIView) {
-                  // A. UIPencilInteraction (Soporta Doble Tap en Pencil 2/Pro y Squeeze en Pencil Pro)
+              func attachPencilInteractions(to view: UIView) {
                   let pencilInteraction = UIPencilInteraction()
                   pencilInteraction.delegate = self
                   view.addInteraction(pencilInteraction)
 
-                  // B. UIHoverGestureRecognizer (Detecta cuando acercas el Apple Pencil a la pantalla en iPads con chip M)
                   let hoverGesture = UIHoverGestureRecognizer(target: self, action: #selector(handleHover(_:)))
                   hoverGesture.delegate = self
                   view.addGestureRecognizer(hoverGesture)
 
-                  // C. Pan Gesture exclusivo para Apple Pencil para que arrastrar con el lapiz seleccione texto/mueva objetos como un Mouse
                   let pencilDrag = UIPanGestureRecognizer(target: self, action: #selector(handlePencilDrag(_:)))
                   pencilDrag.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.pencil.rawValue)]
                   pencilDrag.maximumNumberOfTouches = 1
@@ -819,14 +690,12 @@ jobs:
                   }
               }
 
-              // Compatibilidad total con Doble Tap (Pencil 2 y Pro)
               func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
-                  let feedback = UIImpactFeedbackGenerator(style: .Medium)
+                  let feedback = UIImpactFeedbackGenerator(style: .medium)
                   feedback.impactOccurred()
                   onPencilDoubleTap?()
               }
 
-              // Compatibilidad con iPadOS 17.5+ Apple Pencil Pro (Squeeze / Pellizcar y Doble Tap con ubicacion de puntero)
               @available(iOS 17.5, *)
               func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveTap tap: UIPencilInteraction.Tap) {
                   if let pose = tap.hoverPose {
@@ -842,30 +711,117 @@ jobs:
                   if let pose = squeeze.hoverPose {
                       lastHoverPoint = pose.location
                   }
-                  if squeeze.phase == .began || squeeze.phase == .ended {
-                      if squeeze.phase == .began {
-                          let feedback = UIImpactFeedbackGenerator(style: .heavy)
-                          feedback.impactOccurred()
-                          onPencilProSqueeze?(lastHoverPoint)
-                      }
+                  if squeeze.phase == .began {
+                      let feedback = UIImpactFeedbackGenerator(style: .heavy)
+                      feedback.impactOccurred()
+                      onPencilProSqueeze?(lastHoverPoint)
                   }
               }
 
               func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
                   return true
               }
+
+              func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+                  guard message.name == "nativeBridge",
+                        let body = message.body as? [String: Any],
+                        let type = body["type"] as? String else { return }
+
+                  if type == "exportFile" {
+                      let filename = (body["filename"] as? String) ?? "Documento.docx"
+                      let base64 = (body["base64"] as? String) ?? ""
+                      if let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters) {
+                          handleExportedData(data: data, filename: filename)
+                      }
+                  } else if type == "printDocument" {
+                      printCurrentWebView()
+                  }
+              }
+
+              func handleExportedData(data: Data, filename: String) {
+                  let safeName = filename.isEmpty ? "Documento.docx" : filename
+                  let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(safeName)
+                  do {
+                      if FileManager.default.fileExists(atPath: tempURL.path) {
+                          try FileManager.default.removeItem(at: tempURL)
+                      }
+                      try data.write(to: tempURL, options: .atomic)
+
+                      if let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                          let localCopy = docsDir.appendingPathComponent(safeName)
+                          try? FileManager.default.removeItem(at: localCopy)
+                          try? data.write(to: localCopy, options: .atomic)
+                      }
+
+                      DispatchQueue.main.async {
+                          self.presentNativeSaveOptions(fileURL: tempURL)
+                      }
+                  } catch {
+                      print("Error escribiendo archivo: \\(error)")
+                  }
+              }
+
+              func presentNativeSaveOptions(fileURL: URL) {
+                  guard let topVC = Self.topViewController() else { return }
+                  let docPicker = UIDocumentPickerViewController(forExporting: [fileURL], asCopy: true)
+                  docPicker.delegate = self
+                  docPicker.modalPresentationStyle = .formSheet
+                  topVC.present(docPicker, animated: true)
+              }
+
+              func printCurrentWebView() {
+                  guard let webView = webView else { return }
+                  let printController = UIPrintInteractionController.shared
+                  let printInfo = UIPrintInfo(dictionary: nil)
+                  printInfo.outputType = .general
+                  printInfo.jobName = "WordCraft Document"
+                  printController.printInfo = printInfo
+                  printController.printFormatter = webView.viewPrintFormatter()
+                  printController.present(animated: true, completionHandler: nil)
+              }
+
+              func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+                  download.delegate = self
+              }
+
+              func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+                  download.delegate = self
+              }
+
+              func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
+                  let dest = FileManager.default.temporaryDirectory.appendingPathComponent(suggestedFilename)
+                  try? FileManager.default.removeItem(at: dest)
+                  lastDownloadURL = dest
+                  completionHandler(dest)
+              }
+
+              func downloadDidFinish(_ download: WKDownload) {
+                  if let url = lastDownloadURL, let data = try? Data(contentsOf: url) {
+                      handleExportedData(data: data, filename: url.lastPathComponent)
+                  }
+              }
+
+              static func topViewController() -> UIViewController? {
+                  guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                        let rootVC = scene.windows.first?.rootViewController else { return nil }
+                  var top = rootVC
+                  while let presented = top.presentedViewController {
+                      top = presented
+                  }
+                  return top
+              }
           }
 
           struct WebViewContainer: UIViewRepresentable {
               @Binding var webViewRef: WKWebView?
-              @Binding var coordinatorRef: NativeCoordinator?
+              @Binding var coordinatorRef: AppCoordinator?
               @Binding var hoverLocation: CGPoint
               @Binding var isPencilHovering: Bool
               @Binding var showPencilPalette: Bool
               @Binding var paletteAnchor: CGPoint
 
-              func makeCoordinator() -> (NativeCoordinator, PencilInteractionManager) {
-                  (NativeCoordinator(), PencilInteractionManager())
+              func makeCoordinator() -> AppCoordinator {
+                  AppCoordinator()
               }
 
               func makeUIView(context: Context) -> WKWebView {
@@ -874,34 +830,32 @@ jobs:
                   let config = WKWebViewConfiguration()
                   config.preferences.javaScriptCanOpenWindowsAutomatically = true
                   config.allowsInlineMediaPlayback = true
-                  config.userContentController.add(context.coordinator.0, name: "nativeBridge")
+                  config.userContentController.add(context.coordinator, name: "nativeBridge")
 
                   let webView = WKWebView(frame: .zero, configuration: config)
-                  webView.navigationDelegate = context.coordinator.0
-                  webView.uiDelegate = context.coordinator.0
+                  webView.navigationDelegate = context.coordinator
+                  webView.uiDelegate = context.coordinator
                   webView.scrollView.isScrollEnabled = false
                   webView.scrollView.bounces = false
                   webView.scrollView.contentInsetAdjustmentBehavior = .never
-                  context.coordinator.0.webView = webView
 
-                  // Conectar el gestor de Apple Pencil (Hover, Mouse Drag, Double Tap y Squeeze)
-                  let pencilManager = context.coordinator.1
-                  pencilManager.webView = webView
-                  pencilManager.onHoverMove = { pt, active in
+                  let coord = context.coordinator
+                  coord.webView = webView
+                  coord.onHoverMove = { pt, active in
                       DispatchQueue.main.async {
                           self.hoverLocation = pt
                           self.isPencilHovering = active
                       }
                   }
-                  pencilManager.onPencilDoubleTap = {
+                  coord.onPencilDoubleTap = {
                       DispatchQueue.main.async {
-                          self.paletteAnchor = pencilManager.lastHoverPoint
+                          self.paletteAnchor = coord.lastHoverPoint
                           withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
                               self.showPencilPalette.toggle()
                           }
                       }
                   }
-                  pencilManager.onPencilProSqueeze = { pt in
+                  coord.onPencilProSqueeze = { pt in
                       DispatchQueue.main.async {
                           self.paletteAnchor = pt
                           withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
@@ -909,11 +863,11 @@ jobs:
                           }
                       }
                   }
-                  pencilManager.attach(to: webView)
+                  coord.attachPencilInteractions(to: webView)
 
                   DispatchQueue.main.async {
                       self.webViewRef = webView
-                      self.coordinatorRef = context.coordinator.0
+                      self.coordinatorRef = coord
                   }
 
                   LocalWebServer.shared.start { port in
@@ -930,7 +884,7 @@ jobs:
           @main
           struct WordCraftApp: App {
               @State private var webViewRef: WKWebView?
-              @State private var coordinatorRef: NativeCoordinator?
+              @State private var coordinatorRef: AppCoordinator?
               @State private var hoverLocation: CGPoint = .zero
               @State private var isPencilHovering: Bool = false
               @State private var showPencilPalette: Bool = false
@@ -952,7 +906,6 @@ jobs:
                               )
                               .ignoresSafeArea(.all, edges: .all)
 
-                              // 1. Puntero de Precision del Apple Pencil al acercarlo a la pantalla (Modo Mouse Hover)
                               if isPencilHovering {
                                   ZStack {
                                       Circle()
@@ -967,7 +920,6 @@ jobs:
                                   .allowsHitTesting(false)
                               }
 
-                              // 2. Paleta Flotante del Apple Pencil Pro (Se abre al Pellizcar/Squeeze o Doble Tap en el Pencil)
                               if showPencilPalette {
                                   VStack(spacing: 10) {
                                       HStack(spacing: 12) {
@@ -1019,7 +971,6 @@ jobs:
                                   )
                               }
 
-                              // 3. Pildora Flotante de Acceso Directo Nativo iPadOS (Teclado, Guardar, Imprimir y Dictado/Texto Rapido)
                               HStack(spacing: 10) {
                                   Button(action: {
                                       focusEditorKeyboard()

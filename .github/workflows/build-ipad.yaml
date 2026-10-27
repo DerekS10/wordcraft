@@ -4,8 +4,6 @@ on:
   workflow_dispatch:
   push:
     branches: [ "main" ]
-    paths:
-      - '.github/workflows/build-ipad.yml'
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -15,12 +13,12 @@ jobs:
     runs-on: macos-15
 
     steps:
-      - name: 1. Checkout del código (con submódulos)
+      - name: 1. Checkout del código
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: 2. Instalar Rust (última versión estable) y target WASM
+      - name: 2. Instalar Rust y target WASM
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -28,25 +26,27 @@ jobs:
       - name: 3. Cachear compilación de Rust
         uses: Swatinem/rust-cache@v2
 
-      - name: 4. Instalar Trunk, wasm-bindgen y wasm-opt precompilados
+      - name: 4. Instalar Trunk, wasm-bindgen y wasm-opt
         uses: taiki-e/install-action@v2
         with:
           tool: trunk,wasm-bindgen-cli,wasm-opt
 
-      - name: 5. Compilar WordCraft a WebAssembly directo a ios-app/www
+      - name: 5. Compilar WordCraft a WebAssembly
         run: |
+          rm -rf "$GITHUB_WORKSPACE/ios-app"
           mkdir -p "$GITHUB_WORKSPACE/ios-app/www"
           cd apps/wordcraft-web
           trunk build --release --public-url "./" --dist "$GITHUB_WORKSPACE/ios-app/www"
-          ls -la "$GITHUB_WORKSPACE/ios-app/www"
 
-      - name: 6. Generar archivos nativos de iPadOS y Proyecto Xcode
+      - name: 6. Generar archivos de iPadOS y Proyecto Xcode
         run: |
           mkdir -p "$GITHUB_WORKSPACE/ios-app/Sources"
           cd "$GITHUB_WORKSPACE/ios-app"
 
-          cat << 'EOF' > project.yml
-          name: WordCraft
+          python3 -c '
+          import pathlib
+
+          project_yml = """name: WordCraft
           options:
             bundleIdPrefix: com.wordcraft
             deploymentTarget:
@@ -68,10 +68,9 @@ jobs:
                 - path: www
                   type: folder
                   buildPhase: resources
-          EOF
+          """
 
-          cat << 'EOF' > Info.plist
-          <?xml version="1.0" encoding="UTF-8"?>
+          info_plist = """<?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
@@ -119,10 +118,9 @@ jobs:
               <true/>
           </dict>
           </plist>
-          EOF
+          """
 
-          cat << 'EOF' > Sources/WordCraftApp.swift
-          import SwiftUI
+          swift_code = """import SwiftUI
           import WebKit
 
           class LocalWasmSchemeHandler: NSObject, WKURLSchemeHandler {
@@ -132,18 +130,15 @@ jobs:
                   if path.isEmpty || path == "/" {
                       path = "/index.html"
                   }
-                  
                   guard let wwwURL = Bundle.main.resourceURL?.appendingPathComponent("www") else {
                       urlSchemeTask.didFailWithError(URLError(.fileDoesNotExist))
                       return
                   }
-                  
                   let fileURL = wwwURL.appendingPathComponent(String(path.dropFirst()))
                   guard let data = try? Data(contentsOf: fileURL) else {
                       urlSchemeTask.didFailWithError(URLError(.fileDoesNotExist))
                       return
                   }
-                  
                   let ext = fileURL.pathExtension.lowercased()
                   let mimeType: String
                   switch ext {
@@ -156,7 +151,6 @@ jobs:
                   case "ttf", "otf": mimeType = "font/ttf"
                   default:     mimeType = "application/octet-stream"
                   }
-                  
                   let response = HTTPURLResponse(
                       url: url,
                       statusCode: 200,
@@ -172,7 +166,6 @@ jobs:
                   urlSchemeTask.didReceive(data)
                   urlSchemeTask.didFinish()
               }
-              
               func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
           }
 
@@ -182,18 +175,15 @@ jobs:
                   config.setURLSchemeHandler(LocalWasmSchemeHandler(), forURLScheme: "wordcraft")
                   config.preferences.javaScriptCanOpenWindowsAutomatically = true
                   config.allowsInlineMediaPlayback = true
-                  
                   let webView = WKWebView(frame: .zero, configuration: config)
                   webView.scrollView.isScrollEnabled = false
                   webView.scrollView.bounces = false
                   webView.scrollView.contentInsetAdjustmentBehavior = .never
-                  
                   if let url = URL(string: "wordcraft://app/index.html") {
                       webView.load(URLRequest(url: url))
                   }
                   return webView
               }
-              
               func updateUIView(_ uiView: WKWebView, context: Context) {}
           }
 
@@ -207,10 +197,17 @@ jobs:
                   }
               }
           }
-          EOF
+          """
 
+          import textwrap
+          pathlib.Path("project.yml").write_text(textwrap.dedent(project_yml).lstrip())
+          pathlib.Path("Info.plist").write_text(textwrap.dedent(info_plist).lstrip())
+          pathlib.Path("Sources/WordCraftApp.swift").write_text(textwrap.dedent(swift_code).lstrip())
+          '
+
+          ls -la "$GITHUB_WORKSPACE/ios-app"
           brew install xcodegen
-          xcodegen generate
+          xcodegen generate --spec "$GITHUB_WORKSPACE/ios-app/project.yml"
 
       - name: 7. Compilar App de iPadOS (Sin Firma)
         run: |

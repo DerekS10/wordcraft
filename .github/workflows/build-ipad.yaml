@@ -38,124 +38,194 @@ jobs:
           cd apps/wordcraft-web
           trunk build --release --public-url "./" --dist "$GITHUB_WORKSPACE/ios-app/www"
 
-      - name: 6. Extraer Icono Original, Inyectar Puente iPadOS y Generar Proyecto Xcode
+      - name: 6. Generar Iconos Oficiales de iPad, Puente Nativo Completo y Proyecto Xcode
         run: |
           mkdir -p "$GITHUB_WORKSPACE/ios-app/Sources"
           mkdir -p "$GITHUB_WORKSPACE/ios-app/Assets.xcassets/AppIcon.appiconset"
           cd "$GITHUB_WORKSPACE"
 
-          # 1. Extraer o convertir el icono original del repositorio a 1024x1024 PNG
           brew install librsvg imagemagick xcodegen
-          
+
+          # 1. Buscar el icono original de WordCraft en todo el repo y generar TODOS los tamaños obligatorios de iPadOS
           python3 -c '
-          import os, glob, subprocess, shutil, json
+          import os, glob, subprocess, json, re
 
-          icon_out = "ios-app/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
-          candidates_png = glob.glob("**/icon*.png", recursive=True) + glob.glob("**/logo*.png", recursive=True) + glob.glob("**/*wordcraft*.png", recursive=True)
-          candidates_svg = glob.glob("**/icon*.svg", recursive=True) + glob.glob("**/logo*.svg", recursive=True) + glob.glob("assets/**/*.svg", recursive=True) + glob.glob("packaging/**/*.svg", recursive=True)
-          candidates_icns = glob.glob("**/*.icns", recursive=True)
+          iconset_dir = "ios-app/Assets.xcassets/AppIcon.appiconset"
+          master_png = os.path.join(iconset_dir, "master-1024.png")
 
+          # Buscamos primero en apps/wordcraft-web, assets, packaging o el SVG incrustado en README.md
+          search_files = (
+              glob.glob("apps/wordcraft-web/**/*icon*", recursive=True) +
+              glob.glob("apps/wordcraft/**/*icon*", recursive=True) +
+              glob.glob("assets/**/*", recursive=True) +
+              glob.glob("packaging/**/*", recursive=True) +
+              glob.glob("ios-app/www/**/*", recursive=True)
+          )
+          pngs = [f for f in search_files if f.lower().endswith(".png") and os.path.isfile(f)]
+          svgs = [f for f in search_files if f.lower().endswith(".svg") and os.path.isfile(f)]
+          icns = [f for f in search_files if f.lower().endswith(".icns") and os.path.isfile(f)]
+          icos = [f for f in search_files if f.lower().endswith(".ico") and os.path.isfile(f)]
+
+          print("Icon candidates found - ICNS:", icns, "SVG:", svgs, "PNG:", pngs, "ICO:", icos)
           created = False
-          if candidates_icns:
-              subprocess.run(["sips", "-s", "format", "png", candidates_icns[0], "--out", icon_out], check=False)
-              if os.path.exists(icon_out):
-                  subprocess.run(["magick", icon_out, "-resize", "1024x1024!", "-background", "#1E56A0", "-alpha", "remove", "-alpha", "off", icon_out], check=False)
-                  created = True
 
-          if not created and candidates_png:
-              best_png = max(candidates_png, key=lambda p: os.path.getsize(p))
-              subprocess.run(["magick", best_png, "-resize", "1024x1024!", "-background", "#1E56A0", "-alpha", "remove", "-alpha", "off", icon_out], check=False)
-              created = os.path.exists(icon_out)
+          if icns:
+              subprocess.run(["sips", "-s", "format", "png", icns[0], "--out", master_png], check=False)
+              created = os.path.exists(master_png)
 
-          if not created and candidates_svg:
-              subprocess.run(["rsvg-convert", "-w", "1024", "-h", "1024", candidates_svg[0], "-o", icon_out], check=False)
-              if os.path.exists(icon_out):
-                  subprocess.run(["magick", icon_out, "-background", "#1E56A0", "-alpha", "remove", "-alpha", "off", icon_out], check=False)
-                  created = True
+          if not created and svgs:
+              subprocess.run(["rsvg-convert", "-w", "1024", "-h", "1024", svgs[0], "-o", master_png], check=False)
+              created = os.path.exists(master_png)
+
+          if not created and pngs:
+              best_png = max(pngs, key=lambda p: os.path.getsize(p))
+              subprocess.run(["magick", best_png, "-resize", "1024x1024", master_png], check=False)
+              created = os.path.exists(master_png)
+
+          if not created and icos:
+              subprocess.run(["magick", icos[0] + "[0]", "-resize", "1024x1024", master_png], check=False)
+              created = os.path.exists(master_png)
+
+          # Si el icono esta inline como SVG dentro de README.md o index.html, lo extraemos
+          if not created:
+              for doc in ["README.md", "apps/wordcraft-web/index.html"]:
+                  if os.path.exists(doc):
+                      content = open(doc, "r", encoding="utf-8", errors="ignore").read()
+                      m = re.search(r"(<svg[^>]*>.*?</svg>)", content, re.DOTALL)
+                      if m:
+                          with open("extracted.svg", "w", encoding="utf-8") as sf:
+                              sf.write(m.group(1))
+                          subprocess.run(["rsvg-convert", "-w", "1024", "-h", "1024", "extracted.svg", "-o", master_png], check=False)
+                          if os.path.exists(master_png):
+                              created = True
+                              break
 
           if not created:
-              # Fallback identico al diseno oficial de WordCraft (documento y pluma sobre mosaico azul)
               svg_fallback = """<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
                 <defs>
                   <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
                     <stop offset="0%" stop-color="#2563EB"/>
-                    <stop offset="100%" stop-color="#1D4ED8"/>
+                    <stop offset="100%" stop-color="#1E40AF"/>
                   </linearGradient>
                 </defs>
                 <rect width="1024" height="1024" fill="url(#bg)"/>
-                <rect x="230" y="160" width="480" height="680" rx="40" fill="#FFFFFF"/>
-                <rect x="300" y="280" width="260" height="32" rx="16" fill="#2563EB"/>
-                <rect x="300" y="360" width="340" height="24" rx="12" fill="#93C5FD"/>
-                <rect x="300" y="420" width="340" height="24" rx="12" fill="#93C5FD"/>
-                <rect x="300" y="480" width="280" height="24" rx="12" fill="#93C5FD"/>
-                <rect x="300" y="540" width="320" height="24" rx="12" fill="#93C5FD"/>
-                <g transform="translate(620, 560) rotate(-35)">
-                  <rect x="-35" y="-180" width="70" height="280" rx="14" fill="#F59E0B" stroke="#1E293B" stroke-width="12"/>
-                  <polygon points="-35,100 35,100 0,185" fill="#FDE68A" stroke="#1E293B" stroke-width="12"/>
-                  <polygon points="-12,155 12,155 0,185" fill="#1E293B"/>
+                <rect x="220" y="150" width="500" height="700" rx="44" fill="#FFFFFF"/>
+                <rect x="290" y="260" width="280" height="36" rx="18" fill="#2563EB"/>
+                <rect x="290" y="345" width="360" height="26" rx="13" fill="#93C5FD"/>
+                <rect x="290" y="405" width="360" height="26" rx="13" fill="#93C5FD"/>
+                <rect x="290" y="465" width="300" height="26" rx="13" fill="#93C5FD"/>
+                <rect x="290" y="525" width="340" height="26" rx="13" fill="#93C5FD"/>
+                <g transform="translate(630, 570) rotate(-35)">
+                  <rect x="-38" y="-190" width="76" height="290" rx="16" fill="#F59E0B" stroke="#1E293B" stroke-width="14"/>
+                  <polygon points="-38,100 38,100 0,190" fill="#FDE68A" stroke="#1E293B" stroke-width="14"/>
+                  <polygon points="-14,155 14,155 0,190" fill="#1E293B"/>
                 </g>
               </svg>"""
               with open("fallback.svg", "w") as f:
                   f.write(svg_fallback)
-              subprocess.run(["rsvg-convert", "-w", "1024", "-h", "1024", "fallback.svg", "-o", icon_out], check=True)
-              subprocess.run(["magick", icon_out, "-alpha", "remove", "-alpha", "off", icon_out], check=True)
+              subprocess.run(["rsvg-convert", "-w", "1024", "-h", "1024", "fallback.svg", "-o", master_png], check=True)
 
-          contents_json = {
-            "images": [
-              {
-                "filename": "icon-1024.png",
-                "idiom": "universal",
-                "platform": "ios",
-                "size": "1024x1024"
-              }
-            ],
-            "info": { "author": "xcode", "version": 1 }
-          }
-          with open("ios-app/Assets.xcassets/AppIcon.appiconset/Contents.json", "w") as f:
-              json.dump(contents_json, f, indent=2)
+          # iOS exige que los iconos no tengan canal alfa transparente
+          subprocess.run(["magick", master_png, "-background", "#1E40AF", "-alpha", "remove", "-alpha", "off", master_png], check=True)
+
+          # Generar todos los tamaños exactos de iPhone y iPad (incluyendo 152x152 y 167x167 de iPad Pro)
+          specs = [
+              ("icon-20@1x.png", 20, "20x20", "1x", "ipad"),
+              ("icon-20@2x.png", 40, "20x20", "2x", "ipad"),
+              ("icon-29@1x.png", 29, "29x29", "1x", "ipad"),
+              ("icon-29@2x.png", 58, "29x29", "2x", "ipad"),
+              ("icon-40@1x.png", 40, "40x40", "1x", "ipad"),
+              ("icon-40@2x.png", 80, "40x40", "2x", "ipad"),
+              ("icon-76@1x.png", 76, "76x76", "1x", "ipad"),
+              ("icon-76@2x.png", 152, "76x76", "2x", "ipad"),
+              ("icon-83.5@2x.png", 167, "83.5x83.5", "2x", "ipad"),
+              ("icon-60@2x.png", 120, "60x60", "2x", "iphone"),
+              ("icon-60@3x.png", 180, "60x60", "3x", "iphone"),
+              ("icon-1024.png", 1024, "1024x1024", "1x", "ios-marketing")
+          ]
+
+          images_entry = []
+          for fname, px, size_str, scale_str, idiom_str in specs:
+              out_file = os.path.join(iconset_dir, fname)
+              subprocess.run(["magick", master_png, "-resize", f"{px}x{px}!", out_file], check=True)
+              images_entry.append({
+                  "filename": fname,
+                  "idiom": idiom_str,
+                  "scale": scale_str,
+                  "size": size_str
+              })
+
+          os.remove(master_png)
+          with open(os.path.join(iconset_dir, "Contents.json"), "w") as f:
+              json.dump({"images": images_entry, "info": {"author": "xcode", "version": 1}}, f, indent=2)
           with open("ios-app/Assets.xcassets/Contents.json", "w") as f:
               json.dump({"info": {"author": "xcode", "version": 1}}, f, indent=2)
           '
 
-          # 2. Generar archivos del proyecto iOS con Servidor HTTP Local, Puente de Exportacion y Teclado iPadOS
+          # 2. Inyectar el Puente Completo en index.html y crear el contenedor Swift con Apple Pencil Pro + AirPrint + Archivos Nativos
           cd "$GITHUB_WORKSPACE/ios-app"
 
           python3 -c '
           import pathlib, textwrap
 
-          # Inyectamos en index.html el puente para interceptar descargas Blob y gestionar foco de teclado en iPadOS
           index_path = pathlib.Path("www/index.html")
           if index_path.exists():
               html = index_path.read_text(encoding="utf-8")
-              ipad_patch = """
+              ipad_bridge = """
               <style>
                 html, body, canvas {
                   touch-action: none !important;
+                  -webkit-touch-callout: none !important;
                   -webkit-user-select: none !important;
                   user-select: none !important;
                   overscroll-behavior: none !important;
+                  overflow: hidden !important;
                 }
               </style>
               <script>
               (function() {
-                // 1. Interceptor de exportacion/descargas (.docx, .pdf, .odt, .md, etc.) hacia iPadOS
-                const blobMap = new Map();
+                const blobStore = new Map();
+                let lastCreatedBlob = null;
+
+                // 1. Interceptar el constructor de Blob y URL.createObjectURL para que NUNCA se pierda un archivo exportado/guardado en Rust
+                const OrigBlob = window.Blob;
+                window.Blob = function(parts, options) {
+                  const b = new OrigBlob(parts, options);
+                  lastCreatedBlob = b;
+                  return b;
+                };
+                window.Blob.prototype = OrigBlob.prototype;
+
                 const origCreateObjectURL = URL.createObjectURL;
+                const origRevokeObjectURL = URL.revokeObjectURL;
+
                 URL.createObjectURL = function(obj) {
                   const url = origCreateObjectURL.call(URL, obj);
-                  if (obj instanceof Blob) {
-                    blobMap.set(url, obj);
+                  if (obj instanceof OrigBlob) {
+                    blobStore.set(url, obj);
+                    lastCreatedBlob = obj;
                   }
                   return url;
                 };
 
-                function exportBlobToiPad(blob, filename) {
+                // Evitar que Rust borre el Blob antes de que Swift lo lea
+                URL.revokeObjectURL = function(url) {
+                  setTimeout(() => {
+                    blobStore.delete(url);
+                    origRevokeObjectURL.call(URL, url);
+                  }, 60000);
+                };
+
+                function sendBlobToNative(blob, filename, actionType) {
+                  if (!blob) return;
                   const reader = new FileReader();
                   reader.onloadend = function() {
-                    const base64data = reader.result.split(",")[1];
-                    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.fileExport) {
-                      window.webkit.messageHandlers.fileExport.postMessage({
-                        filename: filename || "document.docx",
+                    const res = reader.result || "";
+                    const base64data = res.includes(",") ? res.split(",")[1] : res;
+                    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.nativeBridge) {
+                      window.webkit.messageHandlers.nativeBridge.postMessage({
+                        type: actionType || "exportFile",
+                        filename: filename || "Documento.docx",
                         base64: base64data,
                         mimeType: blob.type || "application/octet-stream"
                       });
@@ -164,94 +234,188 @@ jobs:
                   reader.readAsDataURL(blob);
                 }
 
-                const origClick = HTMLAnchorElement.prototype.click;
-                HTMLAnchorElement.prototype.click = function() {
-                  if (this.hasAttribute("download") || (this.href && this.href.startsWith("blob:"))) {
-                    const filename = this.getAttribute("download") || "documento.docx";
-                    const blob = blobMap.get(this.href);
-                    if (blob) {
-                      exportBlobToiPad(blob, filename);
-                      return;
-                    } else if (this.href.startsWith("blob:")) {
-                      fetch(this.href).then(r => r.blob()).then(b => exportBlobToiPad(b, filename));
-                      return;
-                    } else if (this.href.startsWith("data:")) {
-                      const base64data = this.href.split(",")[1];
-                      if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.fileExport) {
-                        window.webkit.messageHandlers.fileExport.postMessage({
+                function handleAnchorDownload(anchor) {
+                  if (!anchor) return false;
+                  const href = anchor.getAttribute("href") || anchor.href || "";
+                  const hasDownload = anchor.hasAttribute("download");
+                  if (hasDownload || href.startsWith("blob:") || href.startsWith("data:")) {
+                    const filename = anchor.getAttribute("download") || "Documento.docx";
+                    if (blobStore.has(href)) {
+                      sendBlobToNative(blobStore.get(href), filename, "exportFile");
+                      return true;
+                    } else if (href.startsWith("blob:")) {
+                      fetch(href).then(r => r.blob()).then(b => sendBlobToNative(b, filename, "exportFile")).catch(() => {
+                        if (lastCreatedBlob) sendBlobToNative(lastCreatedBlob, filename, "exportFile");
+                      });
+                      return true;
+                    } else if (href.startsWith("data:")) {
+                      const base64data = href.split(",")[1] || "";
+                      if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.nativeBridge) {
+                        window.webkit.messageHandlers.nativeBridge.postMessage({
+                          type: "exportFile",
                           filename: filename,
                           base64: base64data,
                           mimeType: "application/octet-stream"
                         });
                       }
-                      return;
+                      return true;
+                    } else if (lastCreatedBlob) {
+                      sendBlobToNative(lastCreatedBlob, filename, "exportFile");
+                      return true;
                     }
                   }
-                  return origClick.apply(this, arguments);
+                  return false;
+                }
+
+                // Capturar TODOS los metodos posibles que usa Rust/wasm-bindgen para disparar descargas
+                const origAnchorClick = HTMLAnchorElement.prototype.click;
+                HTMLAnchorElement.prototype.click = function() {
+                  if (handleAnchorDownload(this)) return;
+                  return origAnchorClick.apply(this, arguments);
                 };
 
-                // Soporta tambien showSaveFilePicker si la app lo invoca
+                const origElemClick = HTMLElement.prototype.click;
+                HTMLElement.prototype.click = function() {
+                  if (this.tagName === "A" && handleAnchorDownload(this)) return;
+                  return origElemClick.apply(this, arguments);
+                };
+
+                const origDispatch = EventTarget.prototype.dispatchEvent;
+                EventTarget.prototype.dispatchEvent = function(ev) {
+                  if (this && this.tagName === "A" && ev && (ev.type === "click" || ev.type === "mousedown")) {
+                    if (handleAnchorDownload(this)) return true;
+                  }
+                  return origDispatch.apply(this, arguments);
+                };
+
+                window.addEventListener("click", function(e) {
+                  const a = e.target && e.target.closest ? e.target.closest("a") : null;
+                  if (a && handleAnchorDownload(a)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }
+                }, true);
+
+                // Soporte para File System Access API (showSaveFilePicker)
                 window.showSaveFilePicker = async function(options) {
-                  const suggestedName = (options && options.suggestedName) ? options.suggestedName : "documento.docx";
+                  const suggestedName = (options && options.suggestedName) ? options.suggestedName : "Documento.docx";
                   let chunks = [];
                   return {
+                    name: suggestedName,
                     createWritable: async function() {
                       return {
-                        write: async function(data) { chunks.push(data); },
+                        write: async function(data) {
+                          if (data && data.data) chunks.push(data.data);
+                          else chunks.push(data);
+                        },
                         close: async function() {
-                          const blob = new Blob(chunks);
-                          exportBlobToiPad(blob, suggestedName);
+                          const blob = new OrigBlob(chunks);
+                          sendBlobToNative(blob, suggestedName, "exportFile");
                         }
                       };
                     }
                   };
                 };
 
-                // 2. Asegurar que el canvas reciba el foco para teclados fisicos y eventos de teclado desde Swift
-                window.addEventListener("DOMContentLoaded", () => {
-                  const obs = new MutationObserver(() => {
-                    const canvas = document.querySelector("canvas");
-                    if (canvas && !canvas.dataset.ipadReady) {
-                      canvas.dataset.ipadReady = "1";
-                      canvas.setAttribute("tabindex", "0");
-                      canvas.style.outline = "none";
-                      canvas.focus();
-                      canvas.addEventListener("pointerdown", () => {
-                        canvas.focus();
-                      });
-                    }
-                  });
-                  obs.observe(document.body, { childList: true, subtree: true });
-                });
-
-                // 3. Funcion global para que el teclado en pantalla de iPadOS inyecte texto y teclas especiales a egui/winit
-                window.__wordcraftSendText = function(text) {
-                  const target = document.querySelector("canvas") || document.activeElement || window;
-                  const inputEl = document.querySelector("input, textarea");
-                  if (inputEl && document.activeElement === inputEl) {
-                    document.execCommand("insertText", false, text);
-                  }
-                  for (const ch of text) {
-                    const keyOpts = { key: ch, code: "Key" + ch.toUpperCase(), bubbles: true, cancelable: true };
-                    target.dispatchEvent(new KeyboardEvent("keydown", keyOpts));
-                    target.dispatchEvent(new InputEvent("beforeinput", { data: ch, inputType: "insertText", bubbles: true, cancelable: true }));
-                    target.dispatchEvent(new InputEvent("input", { data: ch, inputType: "insertText", bubbles: true, cancelable: true }));
-                    target.dispatchEvent(new KeyboardEvent("keyup", keyOpts));
+                // 2. Interceptar window.print() para abrir AirPrint nativo de iPadOS
+                window.print = function() {
+                  if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.nativeBridge) {
+                    window.webkit.messageHandlers.nativeBridge.postMessage({
+                      type: "printDocument"
+                    });
                   }
                 };
 
-                window.__wordcraftSendSpecialKey = function(keyName, codeName, keyCodeNum) {
-                  const targets = [document.querySelector("canvas"), document.activeElement, document, window].filter(Boolean);
-                  const opts = { key: keyName, code: codeName, keyCode: keyCodeNum, which: keyCodeNum, bubbles: true, cancelable: true };
-                  if (targets[0]) {
-                    targets[0].dispatchEvent(new KeyboardEvent("keydown", opts));
-                    targets[0].dispatchEvent(new KeyboardEvent("keyup", opts));
+                // 3. Mantener el input nativo de egui/eframe siempre listo para teclado en pantalla y teclado fisico
+                function getEguiInput() {
+                  return document.querySelector("input[type=text], textarea, input:not([type=file])");
+                }
+                function getCanvas() {
+                  return document.querySelector("canvas");
+                }
+
+                window.__wordcraftFocusEditor = function() {
+                  const inp = getEguiInput();
+                  const canvas = getCanvas();
+                  if (inp) {
+                    inp.focus({ preventScroll: true });
+                  } else if (canvas) {
+                    canvas.setAttribute("tabindex", "0");
+                    canvas.focus({ preventScroll: true });
+                  }
+                };
+
+                // Enviar atajos de teclado o comandos directos (para Apple Pencil Pro, Guardar, Imprimir, Deshacer, Formato)
+                window.__wordcraftSendShortcut = function(key, ctrlOrMeta, shiftKey) {
+                  const targets = [getEguiInput(), getCanvas(), document.activeElement, document, window].filter(Boolean);
+                  const code = key.length === 1 ? "Key" + key.toUpperCase() : key;
+                  const evInit = {
+                    key: key,
+                    code: code,
+                    ctrlKey: !!ctrlOrMeta,
+                    metaKey: !!ctrlOrMeta,
+                    shiftKey: !!shiftKey,
+                    bubbles: true,
+                    cancelable: true
+                  };
+                  for (const t of targets) {
+                    t.dispatchEvent(new KeyboardEvent("keydown", evInit));
+                    t.dispatchEvent(new KeyboardEvent("keyup", evInit));
+                  }
+                };
+
+                // Enviar eventos de Mouse/Pointer precisos cuando el Apple Pencil hace Hover o arrastra como mouse
+                window.__wordcraftPencilMouse = function(phase, x, y) {
+                  const canvas = getCanvas();
+                  if (!canvas) return;
+                  const common = {
+                    clientX: x,
+                    clientY: y,
+                    screenX: x,
+                    screenY: y,
+                    pointerId: 1,
+                    pointerType: "mouse",
+                    isPrimary: true,
+                    bubbles: true,
+                    cancelable: true
+                  };
+                  if (phase === "hover") {
+                    canvas.dispatchEvent(new PointerEvent("pointermove", Object.assign({}, common, { buttons: 0 })));
+                    canvas.dispatchEvent(new MouseEvent("mousemove", Object.assign({}, common, { buttons: 0 })));
+                  } else if (phase === "down") {
+                    canvas.focus({ preventScroll: true });
+                    canvas.dispatchEvent(new PointerEvent("pointerdown", Object.assign({}, common, { button: 0, buttons: 1 })));
+                    canvas.dispatchEvent(new MouseEvent("mousedown", Object.assign({}, common, { button: 0, buttons: 1 })));
+                  } else if (phase === "drag") {
+                    canvas.dispatchEvent(new PointerEvent("pointermove", Object.assign({}, common, { button: 0, buttons: 1 })));
+                    canvas.dispatchEvent(new MouseEvent("mousemove", Object.assign({}, common, { button: 0, buttons: 1 })));
+                  } else if (phase === "up") {
+                    canvas.dispatchEvent(new PointerEvent("pointerup", Object.assign({}, common, { button: 0, buttons: 0 })));
+                    canvas.dispatchEvent(new MouseEvent("mouseup", Object.assign({}, common, { button: 0, buttons: 0 })));
+                  }
+                };
+
+                // Inyectar texto garantizando compatibilidad con el input oculto de eframe 0.37
+                window.__wordcraftInsertText = function(text) {
+                  const inp = getEguiInput();
+                  const canvas = getCanvas() || document.body;
+                  if (inp) {
+                    inp.focus({ preventScroll: true });
+                    inp.value = text;
+                    inp.dispatchEvent(new InputEvent("beforeinput", { data: text, inputType: "insertText", bubbles: true, cancelable: true }));
+                    inp.dispatchEvent(new InputEvent("input", { data: text, inputType: "insertText", bubbles: true, cancelable: true }));
+                  }
+                  for (const ch of text) {
+                    const opts = { key: ch, code: "Key" + ch.toUpperCase(), bubbles: true, cancelable: true };
+                    canvas.dispatchEvent(new KeyboardEvent("keydown", opts));
+                    canvas.dispatchEvent(new InputEvent("input", { data: ch, inputType: "insertText", bubbles: true, cancelable: true }));
+                    canvas.dispatchEvent(new KeyboardEvent("keyup", opts));
                   }
                 };
               })();
               </script>
               """
-              html = html.replace("<head>", "<head>" + ipad_patch, 1)
+              html = html.replace("<head>", "<head>" + ipad_bridge, 1)
               index_path.write_text(html, encoding="utf-8")
 
           project_yml = """name: WordCraft
@@ -262,8 +426,8 @@ jobs:
           settings:
             base:
               PRODUCT_BUNDLE_IDENTIFIER: com.wordcraft.ipad
-              MARKETING_VERSION: "0.11.1"
-              CURRENT_PROJECT_VERSION: "2"
+              MARKETING_VERSION: "0.11.2"
+              CURRENT_PROJECT_VERSION: "3"
               TARGETED_DEVICE_FAMILY: "1,2"
               SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: YES
               INFOPLIST_FILE: Info.plist
@@ -302,6 +466,34 @@ jobs:
               <string>$(MARKETING_VERSION)</string>
               <key>CFBundleVersion</key>
               <string>$(CURRENT_PROJECT_VERSION)</string>
+              <key>CFBundleIcons</key>
+              <dict>
+                  <key>CFBundlePrimaryIcon</key>
+                  <dict>
+                      <key>CFBundleIconFiles</key>
+                      <array>
+                          <string>AppIcon60x60</string>
+                      </array>
+                      <key>CFBundleIconName</key>
+                      <string>AppIcon</string>
+                  </dict>
+              </dict>
+              <key>CFBundleIcons~ipad</key>
+              <dict>
+                  <key>CFBundlePrimaryIcon</key>
+                  <dict>
+                      <key>CFBundleIconFiles</key>
+                      <array>
+                          <string>AppIcon20x20</string>
+                          <string>AppIcon29x29</string>
+                          <string>AppIcon40x40</string>
+                          <string>AppIcon76x76</string>
+                          <string>AppIcon83.5x83.5</string>
+                      </array>
+                      <key>CFBundleIconName</key>
+                      <string>AppIcon</string>
+                  </dict>
+              </dict>
               <key>LSRequiresIPhoneOS</key>
               <true/>
               <key>NSAppTransportSecurity</key>
@@ -316,6 +508,8 @@ jobs:
                   <key>UIApplicationSupportsMultipleScenes</key>
                   <true/>
               </dict>
+              <key>UIApplicationSupportsIndirectInputEvents</key>
+              <true/>
               <key>UILaunchScreen</key>
               <dict/>
               <key>UIRequiresFullScreen</key>
@@ -341,8 +535,31 @@ jobs:
           import WebKit
           import Network
           import UniformTypeIdentifiers
+          import ObjectiveC.runtime
 
-          // 1. Micro-servidor HTTP en 127.0.0.1 para que WebKit habilite Secure Context (Teclado Fisico, Portapapeles, Descargas Blob y WebGPU/WebGL2)
+          // 1. Permitir que WKWebView despliegue el teclado nativo de iPadOS programaticamente sin perder el foco del canvas de egui
+          extension WKWebView {
+              static func enableProgrammaticKeyboardFocus() {
+                  guard let wkContentViewClass = NSClassFromString("WKContentView") else { return }
+                  let selectors = [
+                      Selector(("_elementDidFocus:userIsInteracting:blurPreviousNode:activityStateChanges:userObject:")),
+                      Selector(("_elementDidFocus:userIsInteracting:blurPreviousNode:changingActivityState:userObject:"))
+                  ]
+                  for sel in selectors {
+                      if let method = class_getInstanceMethod(wkContentViewClass, sel) {
+                          let originalImp = method_getImplementation(method)
+                          typealias FocusSig = @convention(c) (AnyObject, Selector, UnsafeRawPointer, Bool, Bool, Bool, AnyObject?) -> Void
+                          let origFunc = unsafeBitCast(originalImp, to: FocusSig.self)
+                          let block: @convention(block) (AnyObject, UnsafeRawPointer, Bool, Bool, Bool, AnyObject?) -> Void = { me, arg0, _, arg2, arg3, arg4 in
+                              origFunc(me, sel, arg0, true, arg2, arg3, arg4)
+                          }
+                          method_setImplementation(method, imp_implementationWithBlock(block))
+                      }
+                  }
+              }
+          }
+
+          // 2. Micro-servidor HTTP en 127.0.0.1 para Secure Context completo en iPadOS
           class LocalWebServer {
               static let shared = LocalWebServer()
               private var listener: NWListener?
@@ -359,23 +576,18 @@ jobs:
                       params.allowLocalEndpointReuse = true
                       let listener = try NWListener(using: params, on: .any)
                       self.listener = listener
-
                       listener.stateUpdateHandler = { [weak self] state in
                           if case .ready = state, let assignedPort = listener.port?.rawValue {
                               self?.port = assignedPort
-                              DispatchQueue.main.async {
-                                  completion(assignedPort)
-                              }
+                              DispatchQueue.main.async { completion(assignedPort) }
                           }
                       }
-
-                      listener.newConnectionHandler = { [weak self] connection in
-                          self?.handleConnection(connection)
+                      listener.newConnectionHandler = { [weak self] conn in
+                          self?.handleConnection(conn)
                       }
-
                       listener.start(queue: queue)
                   } catch {
-                      print("Error starting local server: \\(error)")
+                      print("Server error: \\(error)")
                   }
               }
 
@@ -383,41 +595,35 @@ jobs:
                   connection.start(queue: queue)
                   connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, _, error in
                       guard let self = self, let data = data, error == nil,
-                            let request = String(data: data, encoding: .utf8) else {
+                            let req = String(data: data, encoding: .utf8) else {
                           connection.cancel()
                           return
                       }
-                      let firstLine = request.components(separatedBy: "\\r\\n").first ?? ""
+                      let firstLine = req.components(separatedBy: "\\r\\n").first ?? ""
                       let parts = firstLine.components(separatedBy: " ")
                       var urlPath = parts.count > 1 ? parts[1] : "/"
-                      if let qIndex = urlPath.firstIndex(of: "?") {
-                          urlPath = String(urlPath[..<qIndex])
+                      if let qIdx = urlPath.firstIndex(of: "?") {
+                          urlPath = String(urlPath[..<qIdx])
                       }
-                      if urlPath == "/" || urlPath.isEmpty {
-                          urlPath = "/index.html"
-                      }
+                      if urlPath == "/" || urlPath.isEmpty { urlPath = "/index.html" }
                       urlPath = urlPath.removingPercentEncoding ?? urlPath
 
                       guard let wwwURL = Bundle.main.resourceURL?.appendingPathComponent("www") else {
                           connection.cancel()
                           return
                       }
-                      let relativePath = urlPath.hasPrefix("/") ? String(urlPath.dropFirst()) : urlPath
-                      let fileURL = wwwURL.appendingPathComponent(relativePath)
+                      let rel = urlPath.hasPrefix("/") ? String(urlPath.dropFirst()) : urlPath
+                      let fileURL = wwwURL.appendingPathComponent(rel)
 
                       if let fileData = try? Data(contentsOf: fileURL) {
                           let mime = self.mimeType(for: fileURL.pathExtension.lowercased())
                           let header = "HTTP/1.1 200 OK\\r\\nContent-Type: \\(mime)\\r\\nContent-Length: \\(fileData.count)\\r\\nAccess-Control-Allow-Origin: *\\r\\nCache-Control: no-cache\\r\\nConnection: close\\r\\n\\r\\n"
-                          var responseData = Data(header.utf8)
-                          responseData.append(fileData)
-                          connection.send(content: responseData, completion: .contentProcessed { _ in
-                              connection.cancel()
-                          })
+                          var resp = Data(header.utf8)
+                          resp.append(fileData)
+                          connection.send(content: resp, completion: .contentProcessed { _ in connection.cancel() })
                       } else {
                           let notFound = "HTTP/1.1 404 Not Found\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n"
-                          connection.send(content: Data(notFound.utf8), completion: .contentProcessed { _ in
-                              connection.cancel()
-                          })
+                          connection.send(content: Data(notFound.utf8), completion: .contentProcessed { _ in connection.cancel() })
                       }
                   }
               }
@@ -432,61 +638,92 @@ jobs:
                   case "png":  return "image/png"
                   case "json": return "application/json"
                   case "ttf", "otf": return "font/ttf"
-                  case "woff2": return "font/woff2"
                   default:     return "application/octet-stream"
                   }
               }
           }
 
-          // 2. Subclase de WKWebView que responde como First Responder y acepta tanto Teclado Fisico como Teclado en Pantalla
-          class FocusableWKWebView: WKWebView {
-              override var canBecomeFirstResponder: Bool { true }
-          }
-
-          // 3. Puente de Exportacion de Archivos (.docx, .pdf, etc.) y Descargas nativas de WKDownloadDelegate
-          class WebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKDownloadDelegate {
+          // 3. Coordinador Nativo: Guardar en Archivos (UIDocumentPicker), Compartir, AirPrint y Descargas
+          class NativeCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKDownloadDelegate, UIDocumentPickerDelegate {
               weak var webView: WKWebView?
+              var pendingPrintAfterPDF = false
 
               func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-                  if message.name == "fileExport",
-                     let dict = message.body as? [String: Any],
-                     let filename = dict["filename"] as? String,
-                     let base64 = dict["base64"] as? String,
-                     let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters) {
-                      saveAndShareFile(data: data, filename: filename)
+                  guard message.name == "nativeBridge",
+                        let body = message.body as? [String: Any],
+                        let type = body["type"] as? String else { return }
+
+                  if type == "exportFile" {
+                      let filename = (body["filename"] as? String) ?? "Documento.docx"
+                      let base64 = (body["base64"] as? String) ?? ""
+                      if let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters) {
+                          handleExportedData(data: data, filename: filename)
+                      }
+                  } else if type == "printDocument" {
+                      printCurrentWebView()
                   }
               }
 
-              private func saveAndShareFile(data: Data, filename: String) {
-                  let cleanName = filename.isEmpty ? "Documento.docx" : filename
-                  let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(cleanName)
+              func handleExportedData(data: Data, filename: String) {
+                  let safeName = filename.isEmpty ? "Documento.docx" : filename
+                  let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(safeName)
                   do {
+                      if FileManager.default.fileExists(atPath: tempURL.path) {
+                          try FileManager.default.removeItem(at: tempURL)
+                      }
                       try data.write(to: tempURL, options: .atomic)
+
+                      // Tambien guardamos una copia automatica en la carpeta Documentos de la App (visible en la app Archivos -> En mi iPad -> WordCraft)
+                      if let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                          let localCopy = docsDir.appendingPathComponent(safeName)
+                          try? FileManager.default.removeItem(at: localCopy)
+                          try? data.write(to: localCopy, options: .atomic)
+                      }
+
                       DispatchQueue.main.async {
-                          self.presentShareSheet(for: tempURL)
+                          if self.pendingPrintAfterPDF && safeName.lowercased().hasSuffix(".pdf") {
+                              self.pendingPrintAfterPDF = false
+                              self.printPDFData(data: data, jobName: safeName)
+                          } else {
+                              self.presentNativeSaveOptions(fileURL: tempURL)
+                          }
                       }
                   } catch {
-                      print("Error guardando archivo exportado: \\(error)")
+                      print("Error escribiendo archivo: \\(error)")
                   }
               }
 
-              private func presentShareSheet(for fileURL: URL) {
-                  guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                        let rootVC = scene.windows.first?.rootViewController else { return }
-                  var topVC = rootVC
-                  while let presented = topVC.presentedViewController {
-                      topVC = presented
-                  }
-                  let activityVC = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
-                  if let popover = activityVC.popoverPresentationController {
-                      popover.sourceView = topVC.view
-                      popover.sourceRect = CGRect(x: topVC.view.bounds.midX, y: topVC.view.bounds.midY, width: 1, height: 1)
-                      popover.permittedArrowDirections = []
-                  }
-                  topVC.present(activityVC, animated: true)
+              func presentNativeSaveOptions(fileURL: URL) {
+                  guard let topVC = Self.topViewController() else { return }
+                  // Mostramos el selector nativo de Guardar en Archivos de iPadOS (permite elegir carpeta en iPad o iCloud Drive)
+                  let docPicker = UIDocumentPickerViewController(forExporting: [fileURL], asCopy: true)
+                  docPicker.delegate = self
+                  docPicker.modalPresentationStyle = .formSheet
+                  topVC.present(docPicker, animated: true)
               }
 
-              // Soporte adicional si WebKit dispara una descarga estandar
+              func printPDFData(data: Data, jobName: String) {
+                  let printController = UIPrintInteractionController.shared
+                  let printInfo = UIPrintInfo(dictionary: nil)
+                  printInfo.outputType = .general
+                  printInfo.jobName = jobName
+                  printController.printInfo = printInfo
+                  printController.printingItem = data
+                  printController.present(animated: true, completionHandler: nil)
+              }
+
+              func printCurrentWebView() {
+                  guard let webView = webView else { return }
+                  let printController = UIPrintInteractionController.shared
+                  let printInfo = UIPrintInfo(dictionary: nil)
+                  printInfo.outputType = .general
+                  printInfo.jobName = "WordCraft Document"
+                  printController.printInfo = printInfo
+                  printController.printFormatter = webView.viewPrintFormatter()
+                  printController.present(animated: true, completionHandler: nil)
+              }
+
+              // Soporte para WKDownload nativo si WebKit captura un Blob directamente
               func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
                   download.delegate = self
               }
@@ -495,40 +732,188 @@ jobs:
                   download.delegate = self
               }
 
+              private var lastDownloadURL: URL?
               func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
                   let dest = FileManager.default.temporaryDirectory.appendingPathComponent(suggestedFilename)
                   try? FileManager.default.removeItem(at: dest)
+                  lastDownloadURL = dest
                   completionHandler(dest)
               }
 
               func downloadDidFinish(_ download: WKDownload) {
-                  // Presentado por el interceptor JS principal
+                  if let url = lastDownloadURL, let data = try? Data(contentsOf: url) {
+                      handleExportedData(data: data, filename: url.lastPathComponent)
+                  }
+              }
+
+              static func topViewController() -> UIViewController? {
+                  guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                        let rootVC = scene.windows.first?.rootViewController else { return nil }
+                  var top = rootVC
+                  while let presented = top.presentedViewController {
+                      top = presented
+                  }
+                  return top
+              }
+          }
+
+          // 4. Gestor de Apple Pencil (Hover como Puntero Mouse, Trazo como Mouse Drag, Doble Tap y Squeeze del Apple Pencil Pro)
+          class PencilInteractionManager: NSObject, UIPencilInteractionDelegate, UIGestureRecognizerDelegate {
+              weak var webView: WKWebView?
+              var onHoverMove: ((CGPoint, Bool) -> Void)?
+              var onPencilProSqueeze: ((CGPoint) -> Void)?
+              var onPencilDoubleTap: (() -> Void)?
+              var lastHoverPoint: CGPoint = CGPoint(x: 400, y: 300)
+              var pencilActsAsMouse: Bool = true
+
+              func attach(to view: UIView) {
+                  // A. UIPencilInteraction (Soporta Doble Tap en Pencil 2/Pro y Squeeze en Pencil Pro)
+                  let pencilInteraction = UIPencilInteraction()
+                  pencilInteraction.delegate = self
+                  view.addInteraction(pencilInteraction)
+
+                  // B. UIHoverGestureRecognizer (Detecta cuando acercas el Apple Pencil a la pantalla en iPads con chip M)
+                  let hoverGesture = UIHoverGestureRecognizer(target: self, action: #selector(handleHover(_:)))
+                  hoverGesture.delegate = self
+                  view.addGestureRecognizer(hoverGesture)
+
+                  // C. Pan Gesture exclusivo para Apple Pencil para que arrastrar con el lapiz seleccione texto/mueva objetos como un Mouse
+                  let pencilDrag = UIPanGestureRecognizer(target: self, action: #selector(handlePencilDrag(_:)))
+                  pencilDrag.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.pencil.rawValue)]
+                  pencilDrag.maximumNumberOfTouches = 1
+                  pencilDrag.delegate = self
+                  view.addGestureRecognizer(pencilDrag)
+              }
+
+              @objc private func handleHover(_ recognizer: UIHoverGestureRecognizer) {
+                  guard let view = recognizer.view else { return }
+                  let loc = recognizer.location(in: view)
+                  lastHoverPoint = loc
+                  switch recognizer.state {
+                  case .began, .changed:
+                      onHoverMove?(loc, true)
+                      webView?.evaluateJavaScript("window.__wordcraftPencilMouse('hover', \\(loc.x), \\(loc.y));", completionHandler: nil)
+                  case .ended, .cancelled:
+                      onHoverMove?(loc, false)
+                  default:
+                      break
+                  }
+              }
+
+              @objc private func handlePencilDrag(_ recognizer: UIPanGestureRecognizer) {
+                  guard pencilActsAsMouse, let view = recognizer.view else { return }
+                  let loc = recognizer.location(in: view)
+                  lastHoverPoint = loc
+                  switch recognizer.state {
+                  case .began:
+                      onHoverMove?(loc, true)
+                      webView?.evaluateJavaScript("window.__wordcraftPencilMouse('down', \\(loc.x), \\(loc.y));", completionHandler: nil)
+                  case .changed:
+                      onHoverMove?(loc, true)
+                      webView?.evaluateJavaScript("window.__wordcraftPencilMouse('drag', \\(loc.x), \\(loc.y));", completionHandler: nil)
+                  case .ended, .cancelled:
+                      onHoverMove?(loc, false)
+                      webView?.evaluateJavaScript("window.__wordcraftPencilMouse('up', \\(loc.x), \\(loc.y));", completionHandler: nil)
+                  default:
+                      break
+                  }
+              }
+
+              // Compatibilidad total con Doble Tap (Pencil 2 y Pro)
+              func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
+                  let feedback = UIImpactFeedbackGenerator(style: .Medium)
+                  feedback.impactOccurred()
+                  onPencilDoubleTap?()
+              }
+
+              // Compatibilidad con iPadOS 17.5+ Apple Pencil Pro (Squeeze / Pellizcar y Doble Tap con ubicacion de puntero)
+              @available(iOS 17.5, *)
+              func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveTap tap: UIPencilInteraction.Tap) {
+                  if let pose = tap.hoverPose {
+                      lastHoverPoint = pose.location
+                  }
+                  let feedback = UIImpactFeedbackGenerator(style: .medium)
+                  feedback.impactOccurred()
+                  onPencilDoubleTap?()
+              }
+
+              @available(iOS 17.5, *)
+              func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
+                  if let pose = squeeze.hoverPose {
+                      lastHoverPoint = pose.location
+                  }
+                  if squeeze.phase == .began || squeeze.phase == .ended {
+                      if squeeze.phase == .began {
+                          let feedback = UIImpactFeedbackGenerator(style: .heavy)
+                          feedback.impactOccurred()
+                          onPencilProSqueeze?(lastHoverPoint)
+                      }
+                  }
+              }
+
+              func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+                  return true
               }
           }
 
           struct WebViewContainer: UIViewRepresentable {
               @Binding var webViewRef: WKWebView?
+              @Binding var coordinatorRef: NativeCoordinator?
+              @Binding var hoverLocation: CGPoint
+              @Binding var isPencilHovering: Bool
+              @Binding var showPencilPalette: Bool
+              @Binding var paletteAnchor: CGPoint
 
-              func makeCoordinator() -> WebCoordinator {
-                  WebCoordinator()
+              func makeCoordinator() -> (NativeCoordinator, PencilInteractionManager) {
+                  (NativeCoordinator(), PencilInteractionManager())
               }
 
               func makeUIView(context: Context) -> WKWebView {
+                  WKWebView.enableProgrammaticKeyboardFocus()
+
                   let config = WKWebViewConfiguration()
                   config.preferences.javaScriptCanOpenWindowsAutomatically = true
                   config.allowsInlineMediaPlayback = true
-                  config.userContentController.add(context.coordinator, name: "fileExport")
+                  config.userContentController.add(context.coordinator.0, name: "nativeBridge")
 
-                  let webView = FocusableWKWebView(frame: .zero, configuration: config)
-                  webView.navigationDelegate = context.coordinator
-                  webView.uiDelegate = context.coordinator
+                  let webView = WKWebView(frame: .zero, configuration: config)
+                  webView.navigationDelegate = context.coordinator.0
+                  webView.uiDelegate = context.coordinator.0
                   webView.scrollView.isScrollEnabled = false
                   webView.scrollView.bounces = false
                   webView.scrollView.contentInsetAdjustmentBehavior = .never
-                  context.coordinator.webView = webView
+                  context.coordinator.0.webView = webView
+
+                  // Conectar el gestor de Apple Pencil (Hover, Mouse Drag, Double Tap y Squeeze)
+                  let pencilManager = context.coordinator.1
+                  pencilManager.webView = webView
+                  pencilManager.onHoverMove = { pt, active in
+                      DispatchQueue.main.async {
+                          self.hoverLocation = pt
+                          self.isPencilHovering = active
+                      }
+                  }
+                  pencilManager.onPencilDoubleTap = {
+                      DispatchQueue.main.async {
+                          self.paletteAnchor = pencilManager.lastHoverPoint
+                          withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
+                              self.showPencilPalette.toggle()
+                          }
+                      }
+                  }
+                  pencilManager.onPencilProSqueeze = { pt in
+                      DispatchQueue.main.async {
+                          self.paletteAnchor = pt
+                          withAnimation(.spring(response: 0.25, dampingFraction: 0.75)) {
+                              self.showPencilPalette = true
+                          }
+                      }
+                  }
+                  pencilManager.attach(to: webView)
 
                   DispatchQueue.main.async {
                       self.webViewRef = webView
+                      self.coordinatorRef = context.coordinator.0
                   }
 
                   LocalWebServer.shared.start { port in
@@ -542,107 +927,215 @@ jobs:
               func updateUIView(_ uiView: WKWebView, context: Context) {}
           }
 
-          // 4. Puente de Teclado en Pantalla para iPadOS (Permite escribir con el teclado tactil del iPad en el Canvas de egui)
-          struct OnScreenKeyboardBridge: UIViewRepresentable {
-              @Binding var isKeyboardVisible: Bool
-              var onTextTyped: (String) -> Void
-              var onSpecialKey: (String, String, Int) -> Void
-
-              class HiddenKeyInput: UITextField, UITextFieldDelegate {
-                  var onTextTyped: ((String) -> Void)?
-                  var onSpecialKey: ((String, String, Int) -> Void)?
-                  var onDismiss: (() -> Void)?
-
-                  override func deleteBackward() {
-                      onSpecialKey?("Backspace", "Backspace", 8)
-                  }
-
-                  func textField(_ textField: UITextField, shouldChangeCharactersIn range: NSRange, replacementString string: String) -> Bool {
-                      if string == "\\n" {
-                          onSpecialKey?("Enter", "Enter", 13)
-                          return false
-                      }
-                      if !string.isEmpty {
-                          onTextTyped?(string)
-                      }
-                      textField.text = " "
-                      return false
-                  }
-
-                  func textFieldDidEndEditing(_ textField: UITextField) {
-                      onDismiss?()
-                  }
-              }
-
-              func makeUIView(context: Context) -> HiddenKeyInput {
-                  let tf = HiddenKeyInput(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
-                  tf.text = " "
-                  tf.autocorrectionType = .no
-                  tf.autocapitalizationType = .sentences
-                  tf.spellCheckingType = .no
-                  tf.delegate = tf
-                  tf.onTextTyped = onTextTyped
-                  tf.onSpecialKey = onSpecialKey
-                  tf.onDismiss = {
-                      DispatchQueue.main.async {
-                          self.isKeyboardVisible = false
-                      }
-                  }
-                  return tf
-              }
-
-              func updateUIView(_ uiView: HiddenKeyInput, context: Context) {
-                  if isKeyboardVisible && !uiView.isFirstResponder {
-                      uiView.becomeFirstResponder()
-                  } else if !isKeyboardVisible && uiView.isFirstResponder {
-                      uiView.resignFirstResponder()
-                  }
-              }
-          }
-
           @main
           struct WordCraftApp: App {
               @State private var webViewRef: WKWebView?
-              @State private var isKeyboardVisible = false
+              @State private var coordinatorRef: NativeCoordinator?
+              @State private var hoverLocation: CGPoint = .zero
+              @State private var isPencilHovering: Bool = false
+              @State private var showPencilPalette: Bool = false
+              @State private var paletteAnchor: CGPoint = CGPoint(x: 400, y: 300)
+              @State private var showQuickInputModal: Bool = false
+              @State private var quickTextBuffer: String = ""
 
               var body: some Scene {
                   WindowGroup {
-                      ZStack(alignment: .bottomTrailing) {
-                          WebViewContainer(webViewRef: $webViewRef)
+                      GeometryReader { geo in
+                          ZStack(alignment: .bottomTrailing) {
+                              WebViewContainer(
+                                  webViewRef: $webViewRef,
+                                  coordinatorRef: $coordinatorRef,
+                                  hoverLocation: $hoverLocation,
+                                  isPencilHovering: $isPencilHovering,
+                                  showPencilPalette: $showPencilPalette,
+                                  paletteAnchor: $paletteAnchor
+                              )
                               .ignoresSafeArea(.all, edges: .all)
 
-                          OnScreenKeyboardBridge(
-                              isKeyboardVisible: $isKeyboardVisible,
-                              onTextTyped: { text in
-                                  let escaped = text
-                                      .replacingOccurrences(of: "\\\\", with: "\\\\\\\\")
-                                      .replacingOccurrences(of: "\\"", with: "\\\\\\"")
-                                      .replacingOccurrences(of: "\\n", with: "\\\\n")
-                                  webViewRef?.evaluateJavaScript("window.__wordcraftSendText(\\"\\(escaped)\\");", completionHandler: nil)
-                              },
-                              onSpecialKey: { key, code, num in
-                                  webViewRef?.evaluateJavaScript("window.__wordcraftSendSpecialKey(\\"\\(key)\\", \\"\\(code)\\", \\(num));", completionHandler: nil)
+                              // 1. Puntero de Precision del Apple Pencil al acercarlo a la pantalla (Modo Mouse Hover)
+                              if isPencilHovering {
+                                  ZStack {
+                                      Circle()
+                                          .stroke(Color.blue, lineWidth: 2)
+                                          .background(Circle().fill(Color.blue.opacity(0.20)))
+                                          .frame(width: 18, height: 18)
+                                      Circle()
+                                          .fill(Color.white)
+                                          .frame(width: 4, height: 4)
+                                  }
+                                  .position(x: hoverLocation.x, y: hoverLocation.y)
+                                  .allowsHitTesting(false)
                               }
-                          )
-                          .frame(width: 1, height: 1)
-                          .opacity(0.01)
 
-                          // Boton flotante discreto para abrir/cerrar el teclado en pantalla del iPad cuando no uses teclado fisico
-                          Button(action: {
-                              isKeyboardVisible.toggle()
-                          }) {
-                              Image(systemName: isKeyboardVisible ? "keyboard.chevron.compact.down" : "keyboard")
-                                  .font(.system(size: 18, weight: .semibold))
-                                  .foregroundColor(.white)
-                                  .padding(12)
-                                  .background(Color.blue.opacity(0.85))
-                                  .clipShape(Circle())
-                                  .shadow(radius: 4)
+                              // 2. Paleta Flotante del Apple Pencil Pro (Se abre al Pellizcar/Squeeze o Doble Tap en el Pencil)
+                              if showPencilPalette {
+                                  VStack(spacing: 10) {
+                                      HStack(spacing: 12) {
+                                          pencilActionButton(icon: "arrow.uturn.backward", label: "Deshacer") {
+                                              sendShortcut(key: "z", meta: true)
+                                          }
+                                          pencilActionButton(icon: "arrow.uturn.forward", label: "Rehacer") {
+                                              sendShortcut(key: "y", meta: true)
+                                          }
+                                          pencilActionButton(icon: "bold", label: "Negrita") {
+                                              sendShortcut(key: "b", meta: true)
+                                          }
+                                          pencilActionButton(icon: "italic", label: "Cursiva") {
+                                              sendShortcut(key: "i", meta: true)
+                                          }
+                                          pencilActionButton(icon: "underline", label: "Subrayar") {
+                                              sendShortcut(key: "u", meta: true)
+                                          }
+                                      }
+                                      HStack(spacing: 12) {
+                                          pencilActionButton(icon: "square.and.arrow.down", label: "Guardar") {
+                                              sendShortcut(key: "s", meta: true)
+                                              showPencilPalette = false
+                                          }
+                                          pencilActionButton(icon: "printer.fill", label: "Imprimir") {
+                                              coordinatorRef?.printCurrentWebView()
+                                              showPencilPalette = false
+                                          }
+                                          pencilActionButton(icon: "keyboard", label: "Teclado") {
+                                              focusEditorKeyboard()
+                                              showPencilPalette = false
+                                          }
+                                          pencilActionButton(icon: "xmark.circle.fill", label: "Cerrar") {
+                                              showPencilPalette = false
+                                          }
+                                      }
+                                  }
+                                  .padding(14)
+                                  .background(.ultraThinMaterial)
+                                  .cornerRadius(18)
+                                  .overlay(
+                                      RoundedRectangle(cornerRadius: 18)
+                                          .stroke(Color.blue.opacity(0.45), lineWidth: 1.5)
+                                  )
+                                  .shadow(color: Color.black.opacity(0.25), radius: 12, x: 0, y: 6)
+                                  .position(
+                                      x: min(max(paletteAnchor.x, 180), geo.size.width - 180),
+                                      y: min(max(paletteAnchor.y - 70, 90), geo.size.height - 90)
+                                  )
+                              }
+
+                              // 3. Pildora Flotante de Acceso Directo Nativo iPadOS (Teclado, Guardar, Imprimir y Dictado/Texto Rapido)
+                              HStack(spacing: 10) {
+                                  Button(action: {
+                                      focusEditorKeyboard()
+                                  }) {
+                                      Image(systemName: "keyboard")
+                                          .font(.system(size: 16, weight: .semibold))
+                                          .foregroundColor(.white)
+                                          .padding(10)
+                                          .background(Color.blue.opacity(0.9))
+                                          .clipShape(Circle())
+                                  }
+
+                                  Button(action: {
+                                      showQuickInputModal = true
+                                  }) {
+                                      Image(systemName: "character.cursor.ibeam")
+                                          .font(.system(size: 16, weight: .semibold))
+                                          .foregroundColor(.white)
+                                          .padding(10)
+                                          .background(Color.indigo.opacity(0.9))
+                                          .clipShape(Circle())
+                                  }
+
+                                  Button(action: {
+                                      sendShortcut(key: "s", meta: true)
+                                  }) {
+                                      Image(systemName: "square.and.arrow.down")
+                                          .font(.system(size: 16, weight: .semibold))
+                                          .foregroundColor(.white)
+                                          .padding(10)
+                                          .background(Color.green.opacity(0.9))
+                                          .clipShape(Circle())
+                                  }
+
+                                  Button(action: {
+                                      coordinatorRef?.printCurrentWebView()
+                                  }) {
+                                      Image(systemName: "printer")
+                                          .font(.system(size: 16, weight: .semibold))
+                                          .foregroundColor(.white)
+                                          .padding(10)
+                                          .background(Color.orange.opacity(0.9))
+                                          .clipShape(Circle())
+                                  }
+                              }
+                              .padding(8)
+                              .background(.ultraThinMaterial)
+                              .clipShape(Capsule())
+                              .shadow(radius: 5)
+                              .padding(.trailing, 18)
+                              .padding(.bottom, 20)
                           }
-                          .padding(.trailing, 20)
-                          .padding(.bottom, 24)
                       }
                       .statusBar(hidden: true)
+                      .sheet(isPresented: $showQuickInputModal) {
+                          NavigationView {
+                              VStack(alignment: .leading, spacing: 12) {
+                                  Text("Escribe o usa Dictado por Voz / Scribble con Apple Pencil y se insertara directo en tu documento:")
+                                      .font(.subheadline)
+                                      .foregroundColor(.secondary)
+                                  TextEditor(text: $quickTextBuffer)
+                                      .font(.body)
+                                      .padding(8)
+                                      .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.gray.opacity(0.3)))
+                                  Spacer()
+                              }
+                              .padding()
+                              .navigationTitle("Insertar Texto / Scribble")
+                              .navigationBarTitleDisplayMode(.inline)
+                              .toolbar {
+                                  ToolbarItem(placement: .cancellationAction) {
+                                      Button("Cancelar") {
+                                          showQuickInputModal = false
+                                      }
+                                  }
+                                  ToolbarItem(placement: .confirmationAction) {
+                                      Button("Insertar en Documento") {
+                                          let escaped = quickTextBuffer
+                                              .replacingOccurrences(of: "\\\\", with: "\\\\\\\\")
+                                              .replacingOccurrences(of: "\\"", with: "\\\\\\"")
+                                              .replacingOccurrences(of: "\\n", with: "\\\\n")
+                                          webViewRef?.evaluateJavaScript("window.__wordcraftInsertText(\\"\\(escaped)\\");", completionHandler: nil)
+                                          quickTextBuffer = ""
+                                          showQuickInputModal = false
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+              }
+
+              private func focusEditorKeyboard() {
+                  webViewRef?.becomeFirstResponder()
+                  webViewRef?.evaluateJavaScript("window.__wordcraftFocusEditor();", completionHandler: nil)
+              }
+
+              private func sendShortcut(key: String, meta: Bool, shift: Bool = false) {
+                  let m = meta ? "true" : "false"
+                  let s = shift ? "true" : "false"
+                  webViewRef?.evaluateJavaScript("window.__wordcraftSendShortcut(\\"\\(key)\\", \\(m), \\(s));", completionHandler: nil)
+              }
+
+              @ViewBuilder
+              private func pencilActionButton(icon: String, label: String, action: @escaping () -> Void) -> some View {
+                  Button(action: action) {
+                      VStack(spacing: 4) {
+                          Image(systemName: icon)
+                              .font(.system(size: 18, weight: .bold))
+                          Text(label)
+                              .font(.system(size: 10, weight: .medium))
+                      }
+                      .foregroundColor(.primary)
+                      .frame(width: 62, height: 50)
+                      .background(Color.primary.opacity(0.08))
+                      .cornerRadius(10)
                   }
               }
           }

@@ -1,0 +1,68 @@
+name: Build WordCraft Unsigned (.ipa)
+
+on:
+  workflow_dispatch: # Botón manual en la pestaña Actions
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'ios-app/**'
+      - '.github/workflows/build-ipad.yml'
+
+jobs:
+  build-unsigned-ipa:
+    runs-on: macos-15
+
+    steps:
+      - name: 1. Checkout del código
+        uses: actions/checkout@v4
+
+      - name: 2. Instalar Rust 1.90 y target WebAssembly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.90.0"
+          targets: wasm32-unknown-unknown
+
+      - name: 3. Cachear compilación de Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: 4. Instalar Trunk
+        run: cargo install --locked trunk
+
+      - name: 5. Compilar WordCraft a WebAssembly
+        run: |
+          cd apps/wordcraft-web
+          trunk build --release --public-url "./"
+          mkdir -p ../../ios-app/www
+          cp -R dist/* ../../ios-app/www/
+
+      - name: 6. Generar Proyecto Xcode con XcodeGen
+        run: |
+          brew install xcodegen
+          cd ios-app
+          xcodegen generate
+
+      - name: 7. Compilar App de iPadOS (Sin Firma)
+        run: |
+          cd ios-app
+          xcodebuild build \
+            -project WordCraft.xcodeproj \
+            -scheme WordCraft \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath $RUNNER_TEMP/build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: 8. Empaquetar en archivo .IPA
+        run: |
+          mkdir -p $RUNNER_TEMP/Payload
+          cp -R $RUNNER_TEMP/build/Build/Products/Release-iphoneos/WordCraft.app $RUNNER_TEMP/Payload/
+          cd $RUNNER_TEMP
+          zip -r WordCraft-iPadOS-Unsigned.ipa Payload
+
+      - name: 9. Subir el archivo .IPA listo para descargar
+        uses: actions/upload-artifact@v4
+        with:
+          name: WordCraft-iPadOS-Unsigned-IPA
+          path: ${{ runner.temp }}/WordCraft-iPadOS-Unsigned.ipa

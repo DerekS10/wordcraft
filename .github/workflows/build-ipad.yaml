@@ -26,29 +26,28 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - name: 3. Instalar Trunk y wasm-bindgen precompilados (en 5 segundos)
+      - name: 3. Cachear compilación de Rust (Acelera futuros builds)
+        uses: Swatinem/rust-cache@v2
+
+      - name: 4. Instalar Trunk, wasm-bindgen y wasm-opt precompilados
         uses: taiki-e/install-action@v2
         with:
-          tool: trunk,wasm-bindgen-cli
+          tool: trunk,wasm-bindgen-cli,wasm-opt
 
-      - name: 4. Preparar catálogos de WordCraft y compilar a WebAssembly
+      - name: 5. Compilar WordCraft a WebAssembly directo a ios-app/www
         run: |
-          # Si el repo tiene un script de preparación de i18n o xtask, lo verificamos
-          if [ -f "craft-i18n.rev" ]; then
-            echo "Verificando entorno del workspace..."
-          fi
+          mkdir -p "$GITHUB_WORKSPACE/ios-app/www"
           cd apps/wordcraft-web
-          trunk build --release --public-url "./"
-          mkdir -p ../../ios-app/www
-          cp -R dist/* ../../ios-app/www/
+          trunk build --release --public-url "./" --dist "$GITHUB_WORKSPACE/ios-app/www"
+          ls -la "$GITHUB_WORKSPACE/ios-app/www"
 
-      - name: 5. Generar Proyecto Xcode con XcodeGen
+      - name: 6. Generar Proyecto Xcode con XcodeGen
         run: |
           brew install xcodegen
           cd ios-app
           xcodegen generate
 
-      - name: 6. Compilar App de iPadOS (Sin Firma)
+      - name: 7. Compilar App de iPadOS (Sin Firma)
         run: |
           cd ios-app
           xcodebuild build \
@@ -61,14 +60,14 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
 
-      - name: 7. Empaquetar en archivo .IPA
+      - name: 8. Empaquetar en archivo .IPA
         run: |
           mkdir -p $RUNNER_TEMP/Payload
           cp -R $RUNNER_TEMP/build/Build/Products/Release-iphoneos/WordCraft.app $RUNNER_TEMP/Payload/
           cd $RUNNER_TEMP
           zip -r WordCraft-iPadOS-Unsigned.ipa Payload
 
-      - name: 8. Subir el archivo .IPA listo para descargar
+      - name: 9. Subir el archivo .IPA listo para descargar
         uses: actions/upload-artifact@v4
         with:
           name: WordCraft-iPadOS-Unsigned-IPA
